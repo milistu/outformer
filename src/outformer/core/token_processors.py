@@ -1,6 +1,5 @@
-from typing import List
 import torch
-from transformers import PreTrainedTokenizer, LogitsWarper, StoppingCriteria
+from transformers import PreTrainedTokenizer, LogitsProcessor, StoppingCriteria
 
 
 class StringStoppingCriteria(StoppingCriteria):
@@ -104,7 +103,7 @@ class NumberStoppingCriteria(StoppingCriteria):
         return False
 
 
-class OutputNumbersTokens(LogitsWarper):
+class OutputNumbersTokens(LogitsProcessor):
     """
     Restricts token generation to only those that can be part of a valid number.
     """
@@ -118,24 +117,33 @@ class OutputNumbersTokens(LogitsWarper):
         self.tokenizer = tokenizer
         self.tokenized_prompt = tokenizer(text=prompt, return_tensors="pt")
         self.prompt = prompt
-        self.allowed_mask = self._create_validation_mask()
+        self.allowed_tokens = self._get_allowed_tokens()
 
-    def _create_validation_mask(self) -> torch.Tensor:
-        """Create a mask of allowed tokens - digits and decimal point"""
-        vocab_size = len(self.tokenizer)
-        mask = torch.zeros(vocab_size, dtype=torch.bool)
+    def _get_allowed_tokens(self) -> set[int]:
+        """Create a set of allowed token IDs - digits and decimal point"""
+        allowed_tokens = set()
 
-        for _, token_id in self.tokenizer.get_vocab().items():
-            token_str = self.tokenizer.decode(token_ids=token_id).strip()
+        # Add special tokens that might be needed
+        special_tokens = [
+            self.tokenizer.eos_token_id,
+            self.tokenizer.pad_token_id,
+        ]
+        allowed_tokens.update(t for t in special_tokens if t is not None)
 
-            # Allow empty tokens and tokens containing only digits and at most one decimal point
-            if token_str == "" or (
-                all(c.isdigit() or c == "." for c in token_str)
-                and token_str.count(".") <= 1
-            ):
-                mask[token_id] = True
+        # Add tokens that represent digits and decimal point
+        for token_id in range(self.tokenizer.vocab_size):
+            try:
+                token_str = self.tokenizer.decode(token_ids=token_id).strip()
+                # Allow empty tokens and tokens containing only digits and at most one decimal point
+                if token_str == "" or (
+                    all(c.isdigit() or c == "." for c in token_str)
+                    and token_str.count(".") <= 1
+                ):
+                    allowed_tokens.add(token_id)
+            except Exception:
+                continue  # Skip tokens that can't be decoded
 
-        return mask
+        return allowed_tokens
 
     def __call__(
         self,
@@ -148,10 +156,15 @@ class OutputNumbersTokens(LogitsWarper):
             scores: The scores.
 
         Returns:
-            torch.FloatTensor: The scores.
+            torch.FloatTensor: The scores with disallowed tokens masked.
         """
-        # Apply the mask to set scores of disallowed tokens to - inf
-        mask = self.allowed_mask.expand_as(scores)
+        # Create a mask for allowed tokens
+        mask = torch.zeros_like(scores, dtype=torch.bool)
+        for token_id in self.allowed_tokens:
+            if token_id < scores.shape[-1]:  # Ensure token_id is within vocabulary size
+                mask[..., token_id] = True
+
+        # Set scores of disallowed tokens to -inf
         scores[~mask] = -float("inf")
 
         return scores
