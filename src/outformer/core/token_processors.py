@@ -168,3 +168,71 @@ class OutputNumbersTokens(LogitsProcessor):
         scores[~mask] = -float("inf")
 
         return scores
+
+
+class OutputCommaAndBracketTokens(LogitsProcessor):
+    """
+    LogitsProcessor that constrains generation to only comma and closing bracket tokens.
+
+    This processor is specifically used in array generation to determine whether to:
+    1. Continue the array (when comma is generated)
+    2. End the array (when closing bracket is generated)
+
+    It ensures that the model can only choose between these two structural elements,
+    preventing any other tokens from being generated at array element boundaries.
+    """
+
+    def __init__(self, tokenizer: PreTrainedTokenizer, prompt: str) -> None:
+        """
+        Args:
+            tokenizer: The tokenizer to use.
+            prompt: The prompt (kept for consistency with other processors).
+        """
+        self.tokenizer = tokenizer
+        self.tokenized_prompt = tokenizer(text=prompt, return_tensors="pt")
+        self.allowed_tokens = self._get_allowed_tokens()
+
+    def _get_allowed_tokens(self) -> set[int]:
+        """Create a set of allowed token IDs - comma and closing bracket"""
+        allowed_tokens = set()
+
+        # Add special tokens that might be needed
+        special_tokens = [
+            self.tokenizer.eos_token_id,
+            self.tokenizer.pad_token_id,
+        ]
+        allowed_tokens.update(t for t in special_tokens if t is not None)
+
+        # Find tokens that are exactly "," or "]"
+        for token_id in range(self.tokenizer.vocab_size):
+            try:
+                token_str = self.tokenizer.decode(token_ids=token_id).strip()
+
+                if token_str in [",", "]"]:
+                    allowed_tokens.add(token_id)
+            except Exception:
+                continue  # Skip tokens that can't be decoded
+
+        return allowed_tokens
+
+    def __call__(
+        self, input_ids: torch.LongTensor, scores: torch.FloatTensor
+    ) -> torch.FloatTensor:
+        """
+        Args:
+            input_ids: The input ids.
+            scores: The scores.
+
+        Returns:
+            torch.FloatTensor: The scores with only comma and bracket tokens allowed.
+        """
+        # Create a mask for allowed tokens
+        mask = torch.zeros_like(scores, dtype=torch.bool)
+        for token_id in self.allowed_tokens:
+            if token_id < scores.shape[-1]:  # Ensure token_id is within vocabulary size
+                mask[..., token_id] = True
+
+        # Set scores of disallowed tokens to -inf
+        scores[~mask] = -float("inf")
+
+        return scores
