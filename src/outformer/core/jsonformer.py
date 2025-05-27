@@ -165,10 +165,12 @@ class Jsonformer:
             input_tokens = self.tokenizer.encode(text=prompt, return_tensors="pt").to(
                 self.model.device
             )
+            attention_mask = torch.ones_like(input_tokens)
 
             # Generate with constraints
             response = self.model.generate(
                 inputs=input_tokens,
+                attention_mask=attention_mask,
                 max_new_tokens=self.max_tokens_number,
                 num_return_sequences=1,
                 logits_processor=[self.number_logit_processor],
@@ -223,10 +225,11 @@ class Jsonformer:
         input_tensor = self.tokenizer.encode(text=prompt, return_tensors="pt").to(
             self.model.device
         )
+        attention_mask = torch.ones_like(input_tensor)
 
         # Get model output with temperature for controlled randomness
         with torch.no_grad():
-            outputs = self.model(input_tensor)
+            outputs = self.model(input_tensor, attention_mask=attention_mask)
             logits = outputs.logits[0, -1] / self.temperature
             probs = torch.nn.functional.softmax(logits, dim=0)
 
@@ -277,10 +280,12 @@ class Jsonformer:
             text=prompt,
             return_tensors="pt",
         ).to(self.model.device)
+        attention_mask = torch.ones_like(input_tokens)
 
         # Generate with stopping criteria for closing quote
         response = self.model.generate(
             inputs=input_tokens,
+            attention_mask=attention_mask,
             max_new_tokens=self.max_tokens_string,
             num_return_sequences=1,
             temperature=self.temperature,
