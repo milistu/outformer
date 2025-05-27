@@ -171,21 +171,37 @@ class Jsonformer:
             )
             attention_mask = torch.ones_like(input_tokens)
 
-            # Generate with constraints
-            response = self.model.generate(
-                inputs=input_tokens,
-                attention_mask=attention_mask,
-                max_new_tokens=self.max_tokens_number,
-                num_return_sequences=1,
-                logits_processor=[self.number_logit_processor],
-                stopping_criteria=[
+            # Set base generation parameters
+            generation_kwargs = {
+                "inputs": input_tokens,
+                "attention_mask": attention_mask,
+                "max_new_tokens": self.max_tokens_number,
+                "num_return_sequences": 1,
+                "logits_processor": [self.number_logit_processor],
+                "stopping_criteria": [
                     NumberStoppingCriteria(
                         tokenizer=self.tokenizer, prompt_length=len(input_tokens[0])
                     )
                 ],
-                temperature=current_temperature,
-                pad_token_id=self.tokenizer.eos_token_id,
-            )
+                "pad_token_id": self.tokenizer.eos_token_id,
+            }
+
+            # Add sampling parameters only when temperature > 0
+            if current_temperature > 0:
+                generation_kwargs.update(
+                    {
+                        "do_sample": True,
+                        "temperature": current_temperature,
+                    }
+                )
+            else:
+                generation_kwargs["do_sample"] = False
+                generation_kwargs["temperature"] = None
+                generation_kwargs["top_p"] = None
+                generation_kwargs["top_k"] = None
+
+            # Generate with constraints
+            response = self.model.generate(**generation_kwargs)
 
             # Process response
             response_text = self.tokenizer.decode(response[0], skip_special_tokens=True)
@@ -286,20 +302,36 @@ class Jsonformer:
         ).to(self.model.device)
         attention_mask = torch.ones_like(input_tokens)
 
-        # Generate with stopping criteria for closing quote
-        response = self.model.generate(
-            inputs=input_tokens,
-            attention_mask=attention_mask,
-            max_new_tokens=self.max_tokens_string,
-            num_return_sequences=1,
-            temperature=self.temperature,
-            stopping_criteria=[
+        # Set base generation parameters
+        generation_kwargs = {
+            "inputs": input_tokens,
+            "attention_mask": attention_mask,
+            "max_new_tokens": self.max_tokens_string,
+            "num_return_sequences": 1,
+            "stopping_criteria": [
                 StringStoppingCriteria(
                     tokenizer=self.tokenizer, prompt_length=len(input_tokens[0])
                 )
             ],
-            pad_token_id=self.tokenizer.eos_token_id,
-        )
+            "pad_token_id": self.tokenizer.eos_token_id,
+        }
+
+        # Add sampling parameters only when temperature > 0
+        if self.temperature > 0:
+            generation_kwargs.update(
+                {
+                    "do_sample": True,
+                    "temperature": self.temperature,
+                }
+            )
+        else:
+            generation_kwargs["do_sample"] = False
+            generation_kwargs["temperature"] = None
+            generation_kwargs["top_p"] = None
+            generation_kwargs["top_k"] = None
+
+        # Generate with stopping criteria for closing quote
+        response = self.model.generate(**generation_kwargs)
 
         # Extract generated tokens (excluding prompt if present)
         generated_tokens = response[0]
@@ -377,16 +409,32 @@ class Jsonformer:
 
                     attention_mask = torch.ones_like(input_tokens)
 
+                    # Set base generation parameters
+                    generation_kwargs = {
+                        "inputs": input_tokens,
+                        "attention_mask": attention_mask,
+                        "max_new_tokens": 1,
+                        "num_return_sequences": 1,
+                        "logits_processor": [self.array_end_logit_processor],
+                        "pad_token_id": self.tokenizer.eos_token_id,
+                    }
+
+                    # Add sampling parameters only when temperature > 0
+                    if self.temperature > 0:
+                        generation_kwargs.update(
+                            {
+                                "do_sample": True,
+                                "temperature": self.temperature,
+                            }
+                        )
+                    else:
+                        generation_kwargs["do_sample"] = False
+                        generation_kwargs["temperature"] = None
+                        generation_kwargs["top_p"] = None
+                        generation_kwargs["top_k"] = None
+
                     # Generate exactly one token, constrained to only "," and "]"
-                    response = self.model.generate(
-                        inputs=input_tokens,
-                        attention_mask=attention_mask,
-                        max_new_tokens=1,
-                        num_return_sequences=1,
-                        logits_processor=[self.array_end_logit_processor],
-                        temperature=self.temperature,
-                        pad_token_id=self.tokenizer.eos_token_id,
-                    )
+                    response = self.model.generate(**generation_kwargs)
 
                     # Extract the generated token
                     last_token = self.tokenizer.decode(
