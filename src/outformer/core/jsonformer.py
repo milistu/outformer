@@ -7,6 +7,7 @@ from transformers import PreTrainedModel, PreTrainedTokenizer
 
 from outformer.core.token_processors import (
     NumberStoppingCriteria,
+    OutputCommaAndBracketTokens,
     OutputNumbersTokens,
     StringStoppingCriteria,
 )
@@ -70,6 +71,9 @@ class Jsonformer:
         self.number_logit_processor = OutputNumbersTokens(
             tokenizer=self.tokenizer, prompt=self.prompt
         )
+        self.array_end_logit_processor = OutputCommaAndBracketTokens(
+            tokenizer=self.tokenizer, prompt=self.prompt
+        )
 
         # Marker used to track where generation should happen
         self.generation_marker = generation_marker
@@ -89,8 +93,8 @@ class Jsonformer:
         # Always print caller in green
         cprint(text=caller, color="green", end=" ")
 
-        # Print value in orange for prompts, blue otherwise
-        color = "orange" if is_prompt else "blue"
+        # Print value in yellow for prompts, blue otherwise
+        color = "yellow" if is_prompt else "blue"
         cprint(text=value, color=color)
 
     def get_prompt(self) -> str:
@@ -318,47 +322,6 @@ class Jsonformer:
 
         return decoded_text.split('"')[0].strip()
 
-    def _predict_next_token(self, prompt: str) -> tuple[bool, bool]:
-        """
-        Predict whether the next token should be a comma or closing bracket.
-
-        Args:
-            prompt: The current prompt to use for prediction
-
-        Returns:
-            tuple[bool, bool]: (found_comma, found_close_bracket)
-        """
-        try:
-            input_tensor = self.tokenizer.encode(text=prompt, return_tensors="pt").to(
-                self.model.device
-            )
-            output = self.model.forward(input_tensor)
-            logits = output.logits[0, -1]
-
-            # Get the top token predictions
-            top_indices = logits.topk(k=30).indices
-            sorted_token_ids = top_indices[logits[top_indices].argsort(descending=True)]
-
-            found_comma = False
-            found_close_bracket = False
-
-            for token_id in sorted_token_ids:
-                decoded_token = self.tokenizer.decode(token_ids=token_id)
-                if "," in decoded_token:
-                    found_comma = True
-                    break
-                if "]" in decoded_token:
-                    found_close_bracket = True
-                    break
-
-            return found_comma, found_close_bracket
-        except Exception as e:
-            self.debug(
-                caller="[generate_array]",
-                value=f"Error predicting next token: {str(e)}",
-            )
-            return False, True  # Default to stopping on error
-
     def generate_array(
         self, item_schema: Dict[str, Any], array: List[Any]
     ) -> List[Any]:
@@ -366,11 +329,13 @@ class Jsonformer:
         Generate an array with elements conforming to the item schema.
 
         This method generates array elements one by one, using the language model to predict
-        whether to continue adding elements. It stops when:
-        1. The model predicts a closing bracket
-        2. The model doesn't predict a comma
-        3. The maximum array length is reached
-        4. An error occurs during generation
+        whether to continue adding elements. It uses a specialized logits processor to ensure
+        the model only chooses between comma (continue) and closing bracket (stop).
+
+        The method stops when:
+        1. The model generates a closing bracket
+        2. The maximum array length is reached
+        3. An error occurs during generation
 
         Args:
             item_schema (Dict[str, Any]): The schema defining the type and constraints for array items
@@ -404,14 +369,46 @@ class Jsonformer:
                 item_prompt = self.get_prompt()
                 array.pop()  # Remove the marker
 
-                # Predict next token
-                found_comma, found_close_bracket = self._predict_next_token(item_prompt)
+                try:
+                    # Use LogitProcessor to force choice between "," and "]"
+                    input_tokens = self.tokenizer.encode(
+                        text=item_prompt, return_tensors="pt"
+                    ).to(self.model.device)
 
-                # Stop if we found close bracket or didn't find comma
-                if found_close_bracket or not found_comma:
-                    break
+                    attention_mask = torch.ones_like(input_tokens)
+
+                    # Generate exactly one token, constrained to only "," and "]"
+                    response = self.model.generate(
+                        inputs=input_tokens,
+                        attention_mask=attention_mask,
+                        max_new_tokens=1,
+                        num_return_sequences=1,
+                        logits_processor=[self.array_end_logit_processor],
+                        temperature=self.temperature,
+                        pad_token_id=self.tokenizer.eos_token_id,
+                    )
+
+                    # Extract the generated token
+                    last_token = self.tokenizer.decode(
+                        response[0][-1], skip_special_tokens=True
+                    )
+                    self.debug(
+                        caller="[generate_array]", value=f"Model chose: {last_token}"
+                    )
+
+                    # Stop if model chose closing bracket
+                    if "]" in last_token:
+                        break
+
+                except Exception as e:
+                    self.debug(
+                        caller="[generate_array]",
+                        value=f"Error during array continuation: {str(e)}",
+                    )
+                    break  # Stop on error
 
             return array
+
         except Exception as e:
             self.debug(
                 caller="[generate_array]", value=f"Error generating array: {str(e)}"
