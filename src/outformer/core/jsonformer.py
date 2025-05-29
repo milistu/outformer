@@ -59,6 +59,7 @@ class Jsonformer:
         self.schema = schema
         self.prompt = prompt
         self.value = {}  # The JSON object being built
+        self.current_field_context = None  # Track current field for comment injection
 
         # Configure generation parameters
         self.debug_on = debug
@@ -97,6 +98,118 @@ class Jsonformer:
         color = "yellow" if is_prompt else "blue"
         cprint(text=value, color=color)
 
+    def _build_field_guidance(self, schema: Dict[str, Any], field_name: str) -> str:
+        """
+        Build a guidance string for a specific field based on its schema.
+
+        Args:
+            schema (Dict[str, Any]): The schema for the field.
+            field_name (str): The name of the field.
+
+        Returns:
+            str: A guidance string for the field.
+        """
+        guidance_parts = []
+
+        # 1. Use explicit description first
+        if "description" in schema:
+            guidance_parts.append(schema["description"])
+
+        # 2. Add constraint guidance
+        constraints = []
+
+        # Enum values
+        if "enum" in schema:
+            enum_values = schema["enum"]
+            constraints.append(f"Must be one of: {', '.join(map(str, enum_values))}")
+
+        # Number constraints
+        if schema.get("type") == "number":
+            if "minimum" in schema and "maximum" in schema:
+                constraints.append(
+                    f"Must be between {schema['minimum']} and {schema['maximum']}"
+                )
+            elif "minimum" in schema:
+                constraints.append(f"At least {schema['minimum']}")
+            elif "maximum" in schema:
+                constraints.append(f"At most {schema['maximum']}")
+
+        # String constraints
+        if schema.get("type") == "string":
+            if "minLength" in schema and "maxLength" in schema:
+                constraints.append(
+                    f"Must be between {schema['minLength']} and {schema['maxLength']} characters"
+                )
+            elif "minLength" in schema:
+                constraints.append(f"At least {schema['minLength']} characters")
+            elif "maxLength" in schema:
+                constraints.append(f"At most {schema['maxLength']} characters")
+
+        # Array constraints
+        if schema.get("type") == "array" and "minItems" in schema:
+            constraints.append(f"At least {schema['minItems']} items")
+
+        # Combine constraints
+        if constraints:
+            guidance_parts.append(" | ".join(constraints))
+
+        return " - ".join(guidance_parts) if guidance_parts else ""
+
+    def _inject_comment_at_generation_point(
+        self, json_progress: str, comment: str
+    ) -> str:
+        """
+        Inject a comment at the generation point in the JSON progress.
+
+        Args:
+            json_progress (str): The JSON progress string.
+            comment (str): The comment to inject.
+
+        Returns:
+            str: The JSON progress string with the comment injected.
+        """
+
+        if not comment:
+            return json_progress
+
+        # Find the generation marker
+        marker_index = json_progress.find(f'"{self.generation_marker}"')
+
+        if marker_index == -1:
+            raise ValueError(
+                f"Generation marker '{self.generation_marker}' not found in current progress"
+            )
+
+        # Look backwards to find where to inject the comment
+        # We want want to place it right after the field name and colon
+
+        # Find the last occurrence of ":" before the marker
+        prefix = json_progress[:marker_index]
+        colon_index = prefix.rfind(":")
+
+        if colon_index == -1:
+            # Fallback: inject right before the marker
+            injection_point = marker_index
+        else:
+            # Inject right after the colon and any whitespace
+            injection_point = colon_index + 1
+            # Skip any whitespace after the colon
+            while (
+                injection_point < marker_index
+                and json_progress[injection_point].isspace()
+            ):
+                injection_point += 1
+
+        # Build the comment
+        formatted_comment = f" /* {comment} */ "
+
+        # Inject the comment
+        return (
+            json_progress[:injection_point]
+            + formatted_comment
+            + json_progress[injection_point:]
+        )
+
     def get_prompt(self) -> str:
         """
         Get the current prompt with the in-progress JSON.
@@ -120,7 +233,7 @@ class Jsonformer:
             "Result: {progress}"
         )
 
-        # Pre-serialize values once
+        # Build JSON progress
         json_progress = json.dumps(self.value)
         json_schema = json.dumps(self.schema)
 
@@ -130,6 +243,21 @@ class Jsonformer:
             raise ValueError(
                 f"Generation marker '{self.generation_marker}' not found in current progress"
             )
+
+        # Inject comment if we have current field context
+        if self.current_field_context:
+            field_name, field_schema = self.current_field_context
+            guidance = self._build_field_guidance(
+                schema=field_schema, field_name=field_name
+            )
+            if guidance:
+                # comment = f"Generating '{field_name}': {guidance}"
+                json_progress = self._inject_comment_at_generation_point(
+                    json_progress=json_progress, comment=guidance
+                )
+
+                # Recalculate marker index after injection
+                marker_index = json_progress.find(f'"{self.generation_marker}"')
 
         # Truncate progress at marker
         truncated_progress = json_progress[:marker_index]
@@ -387,6 +515,10 @@ class Jsonformer:
         try:
             # Generate at least one element for the array
             for _ in range(self.max_array_length):
+                # Set context for array element
+                if item_schema.get("type") in ("number", "boolean", "string"):
+                    self.current_field_context = ("array item", item_schema)
+
                 # Generate an element and add it to the array
                 element = self.generate_value(schema=item_schema, obj=array)
 
@@ -492,6 +624,10 @@ class Jsonformer:
 
         schema_type = schema["type"]
 
+        # Set context for field-specific guidance
+        if schema_type in ("number", "boolean", "string") and key:
+            self.current_field_context = (key, schema)
+
         # Helper function to set generation marker
         def set_marker():
             if key is not None:
@@ -499,40 +635,46 @@ class Jsonformer:
             else:
                 obj.append(self.generation_marker)
 
-        # Handle primitive types
-        if schema_type in ("number", "boolean", "string"):
-            set_marker()
-            generator_map = {
-                "number": self.generate_number,
-                "boolean": self.generate_boolean,
-                "string": self.generate_string,
-            }
-            return generator_map[schema_type]()
+        try:
+            # Handle primitive types
+            if schema_type in ("number", "boolean", "string"):
+                set_marker()
+                generator_map = {
+                    "number": self.generate_number,
+                    "boolean": self.generate_boolean,
+                    "string": self.generate_string,
+                }
+                return generator_map[schema_type]()
 
-        # Handle arrays
-        elif schema_type == "array":
-            if "items" not in schema:
-                raise KeyError("Array schema must contain 'items' field")
-            new_array = []
-            if key is not None:
-                obj[key] = new_array
+            # Handle arrays
+            elif schema_type == "array":
+                if "items" not in schema:
+                    raise KeyError("Array schema must contain 'items' field")
+                new_array = []
+                if key is not None:
+                    obj[key] = new_array
+                else:
+                    obj.append(new_array)
+                return self.generate_array(item_schema=schema["items"], array=new_array)
+
+            # Handle objects
+            elif schema_type == "object":
+                if "properties" not in schema:
+                    raise KeyError("Object schema must contain 'properties' field")
+                new_obj = {}
+                if key is not None:
+                    obj[key] = new_obj
+                else:
+                    obj.append(new_obj)
+                return self.generate_object(
+                    properties=schema["properties"], obj=new_obj
+                )
+
             else:
-                obj.append(new_array)
-            return self.generate_array(item_schema=schema["items"], array=new_array)
-
-        # Handle objects
-        elif schema_type == "object":
-            if "properties" not in schema:
-                raise KeyError("Object schema must contain 'properties' field")
-            new_obj = {}
-            if key is not None:
-                obj[key] = new_obj
-            else:
-                obj.append(new_obj)
-            return self.generate_object(properties=schema["properties"], obj=new_obj)
-
-        else:
-            raise ValueError(f"Unsupported schema type: {schema_type}")
+                raise ValueError(f"Unsupported schema type: {schema_type}")
+        finally:
+            # Clear context after generation (resource optimization)
+            self.current_field_context = None
 
     def generate_object(
         self, properties: Dict[str, Any], obj: Dict[str, Any]
