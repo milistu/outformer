@@ -191,14 +191,22 @@ class Jsonformer:
             # Fallback: inject right before the marker
             injection_point = marker_index
         else:
-            # Inject right after the colon and any whitespace
-            injection_point = colon_index + 1
-            # Skip any whitespace after the colon
-            while (
-                injection_point < marker_index
-                and json_progress[injection_point].isspace()
-            ):
-                injection_point += 1
+            # Look backwards from colon to find the field name
+            # Skip whitespace before colon
+            pos = colon_index - 1
+            while pos >= 0 and json_progress[pos].isspace():
+                pos -= 1
+
+            # Should be at closing quote of field name
+            if pos >= 0 and json_progress[pos] == '"':
+                # Find the opening quote of field name
+                opening_quote_index = json_progress.rfind('"', 0, pos)
+                if opening_quote_index != -1:
+                    injection_point = opening_quote_index
+                else:
+                    injection_point = marker_index
+            else:
+                injection_point = marker_index
 
         # Build the comment
         formatted_comment = f" /* {comment} */ "
