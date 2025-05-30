@@ -98,63 +98,6 @@ class Jsonformer:
         color = "yellow" if is_prompt else "blue"
         cprint(text=value, color=color)
 
-    def _build_field_guidance(self, schema: Dict[str, Any], field_name: str) -> str:
-        """
-        Build a guidance string for a specific field based on its schema.
-
-        Args:
-            schema (Dict[str, Any]): The schema for the field.
-            field_name (str): The name of the field.
-
-        Returns:
-            str: A guidance string for the field.
-        """
-        guidance_parts = []
-
-        # 1. Use explicit description first
-        if "description" in schema:
-            guidance_parts.append(schema["description"])
-
-        # 2. Add constraint guidance
-        constraints = []
-
-        # Enum values
-        if "enum" in schema:
-            enum_values = schema["enum"]
-            constraints.append(f"Must be one of: {', '.join(map(str, enum_values))}")
-
-        # Number constraints
-        if schema.get("type") == "number":
-            if "minimum" in schema and "maximum" in schema:
-                constraints.append(
-                    f"Must be between {schema['minimum']} and {schema['maximum']}"
-                )
-            elif "minimum" in schema:
-                constraints.append(f"At least {schema['minimum']}")
-            elif "maximum" in schema:
-                constraints.append(f"At most {schema['maximum']}")
-
-        # String constraints
-        if schema.get("type") == "string":
-            if "minLength" in schema and "maxLength" in schema:
-                constraints.append(
-                    f"Must be between {schema['minLength']} and {schema['maxLength']} characters"
-                )
-            elif "minLength" in schema:
-                constraints.append(f"At least {schema['minLength']} characters")
-            elif "maxLength" in schema:
-                constraints.append(f"At most {schema['maxLength']} characters")
-
-        # Array constraints
-        if schema.get("type") == "array" and "minItems" in schema:
-            constraints.append(f"At least {schema['minItems']} items")
-
-        # Combine constraints
-        if constraints:
-            guidance_parts.append(" | ".join(constraints))
-
-        return " - ".join(guidance_parts) if guidance_parts else ""
-
     def _inject_comment_at_generation_point(
         self, json_progress: str, comment: str
     ) -> str:
@@ -255,13 +198,9 @@ class Jsonformer:
         # Inject comment if we have current field context
         if self.current_field_context:
             field_name, field_schema = self.current_field_context
-            guidance = self._build_field_guidance(
-                schema=field_schema, field_name=field_name
-            )
-            if guidance:
-                # comment = f"Generating '{field_name}': {guidance}"
+            if "description" in field_schema:
                 json_progress = self._inject_comment_at_generation_point(
-                    json_progress=json_progress, comment=guidance
+                    json_progress=json_progress, comment=field_schema["description"]
                 )
 
                 # Recalculate marker index after injection
@@ -427,6 +366,10 @@ class Jsonformer:
         Returns:
             str: The generated string value, stripped of quotes and whitespace
         """
+        # Handle enum values
+        if "enum" in self.current_field_context[1]:
+            return self.generate_enum(enum_values=self.current_field_context[1]["enum"])
+
         # Prepare prompt with opening quote
         prompt = self.get_prompt() + '"'
         self.debug(caller="[generate_string]", value=prompt, is_prompt=True)
@@ -489,6 +432,54 @@ class Jsonformer:
             return decoded_text
 
         return decoded_text.split('"')[0].strip()
+
+    def generate_enum(self, enum_values: List[str]) -> str:
+        """
+        Generate an enum value by selecting the most probable option from the allowed values.
+
+        Args:
+            enum_values (List[str]): List of allowed enum values
+
+        Returns:
+            str: The selected enum value with highest probability
+        """
+        prompt = self.get_prompt()
+        self.debug(caller="[generate_enum]", value=prompt, is_prompt=True)
+
+        # Prepare input tokens
+        input_tokens = self.tokenizer.encode(text=prompt, return_tensors="pt").to(
+            self.model.device
+        )
+        attention_mask = torch.ones_like(input_tokens)
+
+        # Get model output
+        with torch.no_grad():
+            outputs = self.model(input_tokens, attention_mask=attention_mask)
+            logits = outputs.logits[0, -1] / self.temperature
+            probs = torch.nn.functional.softmax(logits, dim=0)
+
+        # Calculate probabilities for each enum value
+        enum_probabilities = {}
+        for value in enum_values:
+            try:
+                tokens = self.tokenizer.encode(value, add_special_tokens=False)
+                if tokens:
+                    first_token_id = tokens[0]
+                    enum_probabilities[value] = probs[first_token_id].item()
+                else:
+                    enum_probabilities[value] = 0.0
+            except Exception:
+                enum_probabilities[value] = 0.0
+
+        # Select the most probable enum value
+        selected_enum = max(enum_probabilities, key=enum_probabilities.get)
+
+        self.debug(
+            caller="[generate_enum]", value=f"Probabilities: {enum_probabilities}"
+        )
+        self.debug(caller="[generate_enum]", value=f"Selected: {selected_enum}")
+
+        return selected_enum
 
     def generate_array(
         self, item_schema: Dict[str, Any], array: List[Any]

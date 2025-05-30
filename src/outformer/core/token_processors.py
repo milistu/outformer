@@ -1,5 +1,5 @@
 import torch
-from transformers import PreTrainedTokenizer, LogitsProcessor, StoppingCriteria
+from transformers import LogitsProcessor, PreTrainedTokenizer, StoppingCriteria
 
 
 class StringStoppingCriteria(StoppingCriteria):
