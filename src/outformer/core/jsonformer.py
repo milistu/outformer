@@ -482,23 +482,23 @@ class Jsonformer:
         return selected_enum
 
     def generate_array(
-        self, item_schema: Dict[str, Any], array: List[Any]
+        self,
+        item_schema: Dict[str, Any],
+        array: List[Any],
+        array_schema: Dict[str, Any],
     ) -> List[Any]:
         """
         Generate an array with elements conforming to the item schema.
 
-        This method generates array elements one by one, using the language model to predict
-        whether to continue adding elements. It uses a specialized logits processor to ensure
-        the model only chooses between comma (continue) and closing bracket (stop).
-
-        The method stops when:
-        1. The model generates a closing bracket
-        2. The maximum array length is reached
-        3. An error occurs during generation
+        The method generates array elements following these constraints:
+        - If minItems is specified, generates at least that many elements
+        - If maxItems is specified, generates at most that many elements
+        - Falls back to model decision only when constraints allow it
 
         Args:
             item_schema (Dict[str, Any]): The schema defining the type and constraints for array items
             array (List[Any]): The array to populate with generated elements
+            array_schema (Dict[str, Any]): The schema defining the array constraints
 
         Returns:
             List[Any]: The populated array with generated elements
@@ -511,81 +511,116 @@ class Jsonformer:
                 "Invalid item schema: must be a dictionary with 'type' key"
             )
 
+        # Extract constraints
+        min_items = array_schema.get("minItems", 0)
+        max_items = array_schema.get("maxItems", self.max_array_length)
+
+        self.debug(
+            caller="[generate_array]",
+            value=f"Constraints: minItems={min_items}, maxItems={max_items}",
+        )
+
         try:
-            # Generate at least one element for the array
-            for _ in range(self.max_array_length):
+            # Phase 1: Generate required elements (minItems)
+            for i in range(min_items):
+                self.debug(
+                    caller="[generate_array]",
+                    value=f"Generating required element {i+1}/{min_items}",
+                )
                 # Set context for array element
                 if item_schema.get("type") in ("number", "boolean", "string"):
                     self.current_field_context = ("array item", item_schema)
 
                 # Generate an element and add it to the array
                 element = self.generate_value(schema=item_schema, obj=array)
-
-                # Handle first element case
-                if not array:
-                    array.append(element)
-                else:
+                if array and array[-1] == self.generation_marker:
                     array[-1] = element
+                else:
+                    array.append(element)
 
-                # Check if we should continue adding elements
-                array.append(self.generation_marker)
-                item_prompt = self.get_prompt()
-                array.pop()  # Remove the marker
+            # Phase 2: Generate optional elements (between minItems and maxItems)
+            if min_items < max_items:
+                self.debug(
+                    caller="[generate_array]",
+                    value=f"Generating optional elements (up to {max_items} total)",
+                )
 
-                try:
-                    # Use LogitProcessor to force choice between "," and "]"
-                    input_tokens = self.tokenizer.encode(
-                        text=item_prompt, return_tensors="pt"
-                    ).to(self.model.device)
+                # Generate at least one element for the array
+                for i in range(min_items, max_items):
+                    # Set context for array element
+                    if item_schema.get("type") in ("number", "boolean", "string"):
+                        self.current_field_context = ("array item", item_schema)
 
-                    attention_mask = torch.ones_like(input_tokens)
-
-                    # Set base generation parameters
-                    generation_kwargs = {
-                        "inputs": input_tokens,
-                        "attention_mask": attention_mask,
-                        "max_new_tokens": 1,
-                        "num_return_sequences": 1,
-                        "logits_processor": [self.array_end_logit_processor],
-                        "pad_token_id": self.tokenizer.eos_token_id,
-                    }
-
-                    # Add sampling parameters only when temperature > 0
-                    if self.temperature > 0:
-                        generation_kwargs.update(
-                            {
-                                "do_sample": True,
-                                "temperature": self.temperature,
-                            }
-                        )
+                    # Continue: generate the next element
+                    element = self.generate_value(schema=item_schema, obj=array)
+                    if array and array[-1] == self.generation_marker:
+                        array[-1] = element
                     else:
-                        generation_kwargs["do_sample"] = False
-                        generation_kwargs["temperature"] = None
-                        generation_kwargs["top_p"] = None
-                        generation_kwargs["top_k"] = None
+                        array.append(element)
 
-                    # Generate exactly one token, constrained to only "," and "]"
-                    response = self.model.generate(**generation_kwargs)
+                    # Check if we should add another element
+                    array.append(self.generation_marker)
+                    item_prompt = self.get_prompt()
+                    array.pop()  # Remove the marker
 
-                    # Extract the generated token
-                    last_token = self.tokenizer.decode(
-                        response[0][-1], skip_special_tokens=True
-                    )
-                    self.debug(
-                        caller="[generate_array]", value=f"Model chose: '{last_token}'"
-                    )
+                    try:
+                        # Use LogitProcessor to force choice between "," and "]"
+                        input_tokens = self.tokenizer.encode(
+                            text=item_prompt, return_tensors="pt"
+                        ).to(self.model.device)
 
-                    # Stop if model chose closing bracket
-                    if "]" in last_token:
-                        break
+                        attention_mask = torch.ones_like(input_tokens)
 
-                except Exception as e:
-                    self.debug(
-                        caller="[generate_array]",
-                        value=f"Error during array continuation: {str(e)}",
-                    )
-                    break  # Stop on error
+                        # Set base generation parameters
+                        generation_kwargs = {
+                            "inputs": input_tokens,
+                            "attention_mask": attention_mask,
+                            "max_new_tokens": 1,
+                            "num_return_sequences": 1,
+                            "logits_processor": [self.array_end_logit_processor],
+                            "pad_token_id": self.tokenizer.eos_token_id,
+                        }
 
+                        # Add sampling parameters only when temperature > 0
+                        if self.temperature > 0:
+                            generation_kwargs.update(
+                                {
+                                    "do_sample": True,
+                                    "temperature": self.temperature,
+                                }
+                            )
+                        else:
+                            generation_kwargs["do_sample"] = False
+                            generation_kwargs["temperature"] = None
+                            generation_kwargs["top_p"] = None
+                            generation_kwargs["top_k"] = None
+
+                        # Generate exactly one token, constrained to only "," and "]"
+                        response = self.model.generate(**generation_kwargs)
+
+                        # Extract the generated token
+                        last_token = self.tokenizer.decode(
+                            response[0][-1], skip_special_tokens=True
+                        )
+                        self.debug(
+                            caller="[generate_array]",
+                            value=f"Model chose: '{last_token}'",
+                        )
+
+                        # Stop if model chose closing bracket
+                        if "]" in last_token:
+                            break
+
+                    except Exception as e:
+                        self.debug(
+                            caller="[generate_array]",
+                            value=f"Error during array continuation: {str(e)}",
+                        )
+                        break  # Stop on error
+
+            self.debug(
+                caller="[generate_array]", value=f"Final array length: {len(array)}"
+            )
             return array
 
         except Exception as e:
@@ -654,7 +689,9 @@ class Jsonformer:
                     obj[key] = new_array
                 else:
                     obj.append(new_array)
-                return self.generate_array(item_schema=schema["items"], array=new_array)
+                return self.generate_array(
+                    item_schema=schema["items"], array=new_array, array_schema=schema
+                )
 
             # Handle objects
             elif schema_type == "object":
