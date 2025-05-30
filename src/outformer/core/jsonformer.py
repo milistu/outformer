@@ -38,6 +38,7 @@ class Jsonformer:
         max_tokens_string: int = 10,
         temperature: float = 0.7,
         generation_marker: str = "|GENERATION|",
+        num_retries: int = 3,
     ) -> None:
         """
         Initialize a Jsonformer instance.
@@ -53,6 +54,7 @@ class Jsonformer:
             max_tokens_string (int): The maximum number of tokens in a string.
             temperature (float): The temperature to use for generation.
             generation_marker (str): The marker used to track the current generation position in the JSON.
+            num_retries (int): The maximum number of retries for generation.
         """
         self.model = model
         self.tokenizer = tokenizer
@@ -67,6 +69,7 @@ class Jsonformer:
         self.max_tokens_number = max_tokens_number
         self.max_tokens_string = max_tokens_string
         self.temperature = temperature
+        self.num_retries = num_retries
 
         # Initialize token processors
         self.number_logit_processor = OutputNumbersTokens(
@@ -97,6 +100,54 @@ class Jsonformer:
         # Print value in yellow for prompts, blue otherwise
         color = "yellow" if is_prompt else "blue"
         cprint(text=value, color=color)
+
+    def _build_field_guidance(self, schema: Dict[str, Any], field_name: str) -> str:
+        """
+        Build a guidance string for a specific field based on its schema.
+
+        Args:
+            schema (Dict[str, Any]): The schema for the field.
+            field_name (str): The name of the field.
+
+        Returns:
+            str: A guidance string for the field.
+        """
+        guidance_parts = []
+
+        # 1. Use explicit description first
+        if "description" in schema:
+            guidance_parts.append(schema["description"])
+
+        # 2. Add constraint guidance
+        constraints = []
+
+        # Number constraints
+        if schema.get("type") == "number":
+            if "minimum" in schema and "maximum" in schema:
+                constraints.append(
+                    f"Must be between {schema['minimum']} and {schema['maximum']}"
+                )
+            elif "minimum" in schema:
+                constraints.append(f"At least {schema['minimum']}")
+            elif "maximum" in schema:
+                constraints.append(f"At most {schema['maximum']}")
+
+        # String constraints
+        if schema.get("type") == "string":
+            if "minLength" in schema and "maxLength" in schema:
+                constraints.append(
+                    f"Must be between {schema['minLength']} and {schema['maxLength']} characters"
+                )
+            elif "minLength" in schema:
+                constraints.append(f"At least {schema['minLength']} characters")
+            elif "maxLength" in schema:
+                constraints.append(f"At most {schema['maxLength']} characters")
+
+        # Combine constraints
+        if constraints:
+            guidance_parts.append(" | ".join(constraints))
+
+        return " - ".join(guidance_parts) if guidance_parts else ""
 
     def _inject_comment_at_generation_point(
         self, json_progress: str, comment: str
@@ -198,9 +249,12 @@ class Jsonformer:
         # Inject comment if we have current field context
         if self.current_field_context:
             field_name, field_schema = self.current_field_context
-            if "description" in field_schema:
+            guidance = self._build_field_guidance(
+                schema=field_schema, field_name=field_name
+            )
+            if guidance:
                 json_progress = self._inject_comment_at_generation_point(
-                    json_progress=json_progress, comment=field_schema["description"]
+                    json_progress=json_progress, comment=guidance
                 )
 
                 # Recalculate marker index after injection
@@ -214,18 +268,43 @@ class Jsonformer:
             prompt=self.prompt, schema=json_schema, progress=truncated_progress
         )
 
+    def _is_valid_number(
+        self,
+        number: float,
+        min_val: Optional[float] = None,
+        max_val: Optional[float] = None,
+    ) -> bool:
+        """
+        Check if a number satisfies the minimum and maximum constraints.
+
+        Args:
+            number (float): The number to validate
+            min_val (Optional[float]): Minimum allowed value
+            max_val (Optional[float]): Maximum allowed value
+
+        Returns:
+            bool: True if number is within constraints, False otherwise
+        """
+        if min_val is not None and number < min_val:
+            return False
+        if max_val is not None and number > max_val:
+            return False
+        return True
+
     def generate_number(
         self,
+        schema: Optional[Dict[str, Any]] = None,
         temperature: Optional[float] = None,
-        max_retries: int = 3,
+        # max_retries: int = 3,
         temperature_multiplier: float = 1.3,
     ) -> float:
         """
         Generate a number value using the language model.
 
         Args:
+            schema (Optional[Dict[str, Any]]): The schema with potential min/max constraints
             temperature (Optional[float]): Optional temperature override for generation
-            max_retries (int): Maximum number of retry attempts if generation fails
+            # max_retries (int): Maximum number of retry attempts if generation fails
             temperature_multiplier (float): Factor to increase temperature by on retries
 
         Returns:
@@ -235,10 +314,26 @@ class Jsonformer:
             ValueError: If unable to generate a valid number after max retries
         """
 
-        def _attempt_generation(current_temperature: float) -> Optional[float]:
+        # Extract constraints
+        min_val = schema.get("minimum") if schema else None
+        max_val = schema.get("maximum") if schema else None
+
+        if min_val or max_val:
+            self.debug(
+                caller="[generate_number]",
+                value=f"Constraints: min={min_val}, max={max_val}, retries={self.num_retries}",
+            )
+
+        def _attempt_generation(
+            current_temperature: float, attempt: int
+        ) -> Optional[float]:
             # Get and debug the prompt
             prompt = self.get_prompt()
-            self.debug(caller="[generate_number]", value=prompt, is_prompt=True)
+            self.debug(
+                caller="[generate_number]",
+                value=f"Attempt {attempt}: {prompt}",
+                is_prompt=True,
+            )
 
             # Prepare input tokens
             input_tokens = self.tokenizer.encode(text=prompt, return_tensors="pt").to(
@@ -290,17 +385,42 @@ class Jsonformer:
 
         # Initial attempt with base temperature
         current_temp = temperature or self.temperature
-        retries = 0
+        attempt = 1
 
-        while retries <= max_retries:
-            if result := _attempt_generation(current_temp):
-                return result
+        while attempt <= self.num_retries + 1:
+            number = _attempt_generation(
+                current_temperature=current_temp, attempt=attempt
+            )
+            if number is not None:
+                # Check constraints
+                if self._is_valid_number(number, min_val, max_val):
+                    self.debug(
+                        caller="[generate_number]",
+                        value=f"Success on attempt {attempt}: {number}",
+                    )
+                    return number
+                else:
+                    self.debug(
+                        caller="[generate_number]",
+                        value=f"Attempt {attempt}: {number} outside range [{min_val}, {max_val}]",
+                    )
+            else:
+                self.debug(
+                    caller="[generate_number]",
+                    value=f"Attempt {attempt}: Failed to parse number",
+                )
 
-            retries += 1
+            # If not valid, retry
+            attempt += 1
             current_temp *= temperature_multiplier
 
+        # If we get here, all attempts failed
+        constraint_msg = ""
+        if min_val is not None or max_val is not None:
+            constraint_msg = f" within range [{min_val}, {max_val}]"
+
         raise ValueError(
-            f"Failed to generate a valid number after {max_retries} attempts"
+            f"Failed to generate a valid number{constraint_msg} after {self.num_retries} attempts"
         )
 
     def generate_boolean(self) -> bool:
@@ -673,12 +793,12 @@ class Jsonformer:
             # Handle primitive types
             if schema_type in ("number", "boolean", "string"):
                 set_marker()
-                generator_map = {
-                    "number": self.generate_number,
-                    "boolean": self.generate_boolean,
-                    "string": self.generate_string,
-                }
-                return generator_map[schema_type]()
+                if schema_type == "number":
+                    return self.generate_number(schema=schema)
+                elif schema_type == "boolean":
+                    return self.generate_boolean()
+                else:  # string
+                    return self.generate_string()
 
             # Handle arrays
             elif schema_type == "array":
