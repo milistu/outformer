@@ -581,7 +581,7 @@ class Jsonformer:
                         response[0][-1], skip_special_tokens=True
                     )
                     self.debug(
-                        caller="[generate_array]", value=f"Model chose: {last_token}"
+                        caller="[generate_array]", value=f"Model chose: '{last_token}'"
                     )
 
                     # Stop if model chose closing bracket
