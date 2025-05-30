@@ -551,6 +551,13 @@ class Jsonformer:
                     if item_schema.get("type") in ("number", "boolean", "string"):
                         self.current_field_context = ("array item", item_schema)
 
+                    # Continue: generate the next element
+                    element = self.generate_value(schema=item_schema, obj=array)
+                    if array and array[-1] == self.generation_marker:
+                        array[-1] = element
+                    else:
+                        array.append(element)
+
                     # Check if we should add another element
                     array.append(self.generation_marker)
                     item_prompt = self.get_prompt()
@@ -603,13 +610,6 @@ class Jsonformer:
                         # Stop if model chose closing bracket
                         if "]" in last_token:
                             break
-
-                        # Continue: generate the next element
-                        element = self.generate_value(schema=item_schema, obj=array)
-                        if array and array[-1] == self.generation_marker:
-                            array[-1] = element
-                        else:
-                            array.append(element)
 
                     except Exception as e:
                         self.debug(
