@@ -1,5 +1,5 @@
 import json
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union, Tuple
 
 import torch
 from termcolor import cprint
@@ -280,11 +280,116 @@ class Jsonformer:
             return False
         return True
 
+    def _get_generation_kwargs(
+        self,
+        input_tokens: torch.Tensor,
+        max_new_tokens: int,
+        logits_processor: Optional[List] = None,
+        stopping_criteria: Optional[List] = None,
+        temperature: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """
+        Get common generation parameters for model.generate() calls.
+
+        Args:
+            input_tokens (torch.Tensor): Input token tensor
+            max_new_tokens (int): Maximum number of new tokens to generate
+            logits_processor (Optional[List]): Optional list of logits processors
+            stopping_criteria (Optional[List]): Optional list of stopping criteria
+            temperature (Optional[float]): Optional temperature override for generation
+
+        Returns:
+            Dict[str, Any]: Generation parameters dictionary
+        """
+        temperature = temperature or self.temperature
+
+        generation_kwargs = {
+            "inputs": input_tokens,
+            "attention_mask": torch.ones_like(input_tokens),
+            "max_new_tokens": max_new_tokens,
+            "num_return_sequences": 1,
+            "pad_token_id": self.tokenizer.eos_token_id,
+        }
+
+        if logits_processor:
+            generation_kwargs["logits_processor"] = logits_processor
+        if stopping_criteria:
+            generation_kwargs["stopping_criteria"] = stopping_criteria
+
+        # Add sampling parameters only when temperature > 0
+        if temperature > 0:
+            generation_kwargs.update(
+                {
+                    "do_sample": True,
+                    "temperature": temperature,
+                }
+            )
+        else:
+            generation_kwargs.update(
+                {
+                    "do_sample": False,
+                    "temperature": None,
+                    "top_p": None,
+                    "top_k": None,
+                }
+            )
+
+        return generation_kwargs
+
+    def _process_tokens(
+        self,
+        prompt: str,
+        max_new_tokens: int,
+        logits_processor: Optional[List] = None,
+        stopping_criteria: Optional[List] = None,
+        temperature: Optional[float] = None,
+    ) -> Tuple[torch.Tensor, str]:
+        """
+        Process tokens for generation, including encoding and generation.
+
+        Args:
+            prompt (str): The input prompt
+            max_new_tokens (int): Maximum number of new tokens to generate
+            logits_processor (Optional[List]): Optional list of logits processors
+            stopping_criteria (Optional[List]): Optional list of stopping criteria
+            temperature (Optional[float]): Optional temperature override for generation
+
+        Returns:
+            Tuple[torch.Tensor, str]: Generated tokens and decoded text
+        """
+        input_tokens = self.tokenizer.encode(text=prompt, return_tensors="pt").to(
+            self.model.device
+        )
+
+        generation_kwargs = self._get_generation_kwargs(
+            input_tokens=input_tokens,
+            max_new_tokens=max_new_tokens,
+            logits_processor=logits_processor,
+            stopping_criteria=stopping_criteria,
+            temperature=temperature,
+        )
+
+        response = self.model.generate(**generation_kwargs)
+
+        # Extract generated tokens (excluding prompt if present)
+        generated_tokens = response[0]
+        if len(generated_tokens) > len(input_tokens[0]) and torch.equal(
+            generated_tokens[: len(input_tokens[0])], input_tokens[0]
+        ):
+            generated_tokens = generated_tokens[len(input_tokens[0]) :]
+
+        response_text = self.tokenizer.decode(
+            generated_tokens,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=True,
+        )
+
+        return generated_tokens, response_text
+
     def _generate_number(
         self,
         schema: Optional[Dict[str, Any]] = None,
         temperature: Optional[float] = None,
-        # max_retries: int = 3,
         temperature_multiplier: float = 1.3,
     ) -> float:
         """
@@ -293,7 +398,6 @@ class Jsonformer:
         Args:
             schema (Optional[Dict[str, Any]]): The schema with potential min/max constraints
             temperature (Optional[float]): Optional temperature override for generation
-            # max_retries (int): Maximum number of retry attempts if generation fails
             temperature_multiplier (float): Factor to increase temperature by on retries
 
         Returns:
@@ -316,7 +420,6 @@ class Jsonformer:
         def _attempt_generation(
             current_temperature: float, attempt: int
         ) -> Optional[float]:
-            # Get and debug the prompt
             prompt = self._get_prompt()
             self._debug(
                 caller="[generate_number]",
@@ -324,44 +427,24 @@ class Jsonformer:
                 is_prompt=True,
             )
 
-            # Prepare input tokens
             input_tokens = self.tokenizer.encode(text=prompt, return_tensors="pt").to(
                 self.model.device
             )
-            attention_mask = torch.ones_like(input_tokens)
 
-            # Set base generation parameters
-            generation_kwargs = {
-                "inputs": input_tokens,
-                "attention_mask": attention_mask,
-                "max_new_tokens": self.max_tokens_number,
-                "num_return_sequences": 1,
-                "logits_processor": [
+            generation_kwargs = self._get_generation_kwargs(
+                input_tokens=input_tokens,
+                max_new_tokens=self.max_tokens_number,
+                logits_processor=[
                     OutputNumbersTokens(tokenizer=self.tokenizer, prompt=self.prompt)
                 ],
-                "stopping_criteria": [
+                stopping_criteria=[
                     NumberStoppingCriteria(
                         tokenizer=self.tokenizer, prompt_length=len(input_tokens[0])
                     )
                 ],
-                "pad_token_id": self.tokenizer.eos_token_id,
-            }
+                temperature=current_temperature,
+            )
 
-            # Add sampling parameters only when temperature > 0
-            if current_temperature > 0:
-                generation_kwargs.update(
-                    {
-                        "do_sample": True,
-                        "temperature": current_temperature,
-                    }
-                )
-            else:
-                generation_kwargs["do_sample"] = False
-                generation_kwargs["temperature"] = None
-                generation_kwargs["top_p"] = None
-                generation_kwargs["top_k"] = None
-
-            # Generate with constraints
             response = self.model.generate(**generation_kwargs)
 
             # Process response
@@ -487,64 +570,23 @@ class Jsonformer:
         prompt = self._get_prompt() + '"'
         self._debug(caller="[generate_string]", value=prompt, is_prompt=True)
 
-        # Encode and move to model device
-        input_tokens = self.tokenizer.encode(
-            text=prompt,
-            return_tensors="pt",
-        ).to(self.model.device)
-        attention_mask = torch.ones_like(input_tokens)
-
-        # Set base generation parameters
-        generation_kwargs = {
-            "inputs": input_tokens,
-            "attention_mask": attention_mask,
-            "max_new_tokens": self.max_tokens_string,
-            "num_return_sequences": 1,
-            "stopping_criteria": [
+        _, response_text = self._process_tokens(
+            prompt=prompt,
+            max_new_tokens=self.max_tokens_string,
+            stopping_criteria=[
                 StringStoppingCriteria(
-                    tokenizer=self.tokenizer, prompt_length=len(input_tokens[0])
+                    tokenizer=self.tokenizer,
+                    prompt_length=len(self.tokenizer.encode(prompt)),
                 )
             ],
-            "pad_token_id": self.tokenizer.eos_token_id,
-        }
-
-        # Add sampling parameters only when temperature > 0
-        if self.temperature > 0:
-            generation_kwargs.update(
-                {
-                    "do_sample": True,
-                    "temperature": self.temperature,
-                }
-            )
-        else:
-            generation_kwargs["do_sample"] = False
-            generation_kwargs["temperature"] = None
-            generation_kwargs["top_p"] = None
-            generation_kwargs["top_k"] = None
-
-        # Generate with stopping criteria for closing quote
-        response = self.model.generate(**generation_kwargs)
-
-        # Extract generated tokens (excluding prompt if present)
-        generated_tokens = response[0]
-        if len(generated_tokens) > len(input_tokens[0]) and torch.equal(
-            generated_tokens[: len(input_tokens[0])], input_tokens[0]
-        ):
-            generated_tokens = generated_tokens[len(input_tokens[0]) :]
-
-        # Decode and clean up response
-        decoded_text = self.tokenizer.decode(
-            generated_tokens,
-            skip_special_tokens=True,
-            clean_up_tokenization_spaces=True,
         )
-        self._debug(caller="[generate_string]", value=f"|{decoded_text}|")
 
-        # Extract the string content (up to the closing quote if present)
-        if '"' not in decoded_text:
-            return decoded_text
+        self._debug(caller="[generate_string]", value=f"|{response_text}|")
 
-        return decoded_text.split('"')[0].strip()
+        if '"' not in response_text:
+            return response_text
+
+        return response_text.split('"')[0].strip()
 
     def _generate_enum(self, enum_values: List[str]) -> str:
         """
@@ -865,6 +907,44 @@ class Jsonformer:
 
         return obj
 
+    def _validate_schema(
+        self, schema: Dict[str, Any], required_fields: List[str] = None
+    ) -> None:
+        """
+        Validate a schema against required fields and type constraints.
+
+        Args:
+            schema (Dict[str, Any]): The schema to validate
+            required_fields (List[str], optional): List of required fields in the schema
+
+        Raises:
+            ValueError: If schema is invalid or missing required fields
+        """
+        if not isinstance(schema, dict):
+            raise ValueError("Schema must be a dictionary")
+
+        if required_fields:
+            missing_fields = [field for field in required_fields if field not in schema]
+            if missing_fields:
+                raise ValueError(
+                    f"Schema missing required fields: {', '.join(missing_fields)}"
+                )
+
+        if "type" in schema and schema["type"] not in [
+            "number",
+            "boolean",
+            "string",
+            "array",
+            "object",
+        ]:
+            raise ValueError(f"Invalid schema type: {schema['type']}")
+
+        if schema.get("type") == "array" and "items" not in schema:
+            raise ValueError("Array schema must contain 'items' field")
+
+        if schema.get("type") == "object" and "properties" not in schema:
+            raise ValueError("Object schema must contain 'properties' field")
+
     def generate(
         self,
         schema: Dict[str, Any],
@@ -894,11 +974,9 @@ class Jsonformer:
             Dict[str, Any]: The generated JSON object conforming to the schema
 
         Raises:
-            ValueError: If schema is not a dictionary or prompt is empty
+            ValueError: If schema is invalid or prompt is empty
         """
-        # Validate schema
-        if not isinstance(schema, dict) or "properties" not in schema:
-            raise ValueError("Schema must be an object schema with 'properties' field")
+        self._validate_schema(schema, required_fields=["properties"])
         if not prompt.strip():
             raise ValueError("Prompt cannot be empty")
 
@@ -925,7 +1003,6 @@ class Jsonformer:
         self.temperature = temperature if temperature is not None else self.temperature
         self.num_retries = num_retries if num_retries is not None else self.num_retries
 
-        # Generate new object
         return self._generate_object(
             properties=self.schema["properties"], obj=self.value
         )
