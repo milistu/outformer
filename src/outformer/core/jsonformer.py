@@ -29,8 +29,6 @@ class Jsonformer:
         self,
         model: PreTrainedModel,
         tokenizer: PreTrainedTokenizer,
-        schema: Dict[str, Any],
-        prompt: str,
         *,
         debug: bool = False,
         max_array_length: int = 10,
@@ -46,22 +44,21 @@ class Jsonformer:
         Args:
             model (PreTrainedModel): The model to use for generation.
             tokenizer (PreTrainedTokenizer): The tokenizer to use for generation.
-            schema (Dict[str, Any]): The JSON schema to use for generation.
-            prompt (str): The prompt to use for generation.
             debug (bool): Whether to print debug information.
             max_array_length (int): The maximum number of elements in an array.
             max_tokens_number (int): The maximum number of tokens in a number.
             max_tokens_string (int): The maximum number of tokens in a string.
             temperature (float): The temperature to use for generation.
             generation_marker (str): The marker used to track the current generation position in the JSON.
-            num_retries (int): The maximum number of retries for generation.
+            num_retries (int): The maximum number of retries for generation (currently used in number generation).
         """
         self.model = model
         self.tokenizer = tokenizer
-        self.schema = schema
-        self.prompt = prompt
         self.value = {}  # The JSON object being built
         self.current_field_context = None  # Track current field for comment injection
+
+        self.prompt = None
+        self.schema = None
 
         # Configure generation parameters
         self.debug_on = debug
@@ -71,18 +68,10 @@ class Jsonformer:
         self.temperature = temperature
         self.num_retries = num_retries
 
-        # Initialize token processors
-        self.number_logit_processor = OutputNumbersTokens(
-            tokenizer=self.tokenizer, prompt=self.prompt
-        )
-        self.array_end_logit_processor = OutputCommaAndBracketTokens(
-            tokenizer=self.tokenizer, prompt=self.prompt
-        )
-
         # Marker used to track where generation should happen
         self.generation_marker = generation_marker
 
-    def debug(self, caller: str, value: str, is_prompt: bool = False) -> None:
+    def _debug(self, caller: str, value: str, is_prompt: bool = False) -> None:
         """
         Print debug information if debug mode is enabled.
 
@@ -212,7 +201,7 @@ class Jsonformer:
             + json_progress[injection_point:]
         )
 
-    def get_prompt(self) -> str:
+    def _get_prompt(self) -> str:
         """
         Get the current prompt with the in-progress JSON.
 
@@ -291,7 +280,7 @@ class Jsonformer:
             return False
         return True
 
-    def generate_number(
+    def _generate_number(
         self,
         schema: Optional[Dict[str, Any]] = None,
         temperature: Optional[float] = None,
@@ -319,7 +308,7 @@ class Jsonformer:
         max_val = schema.get("maximum") if schema else None
 
         if min_val or max_val:
-            self.debug(
+            self._debug(
                 caller="[generate_number]",
                 value=f"Constraints: min={min_val}, max={max_val}, retries={self.num_retries}",
             )
@@ -328,8 +317,8 @@ class Jsonformer:
             current_temperature: float, attempt: int
         ) -> Optional[float]:
             # Get and debug the prompt
-            prompt = self.get_prompt()
-            self.debug(
+            prompt = self._get_prompt()
+            self._debug(
                 caller="[generate_number]",
                 value=f"Attempt {attempt}: {prompt}",
                 is_prompt=True,
@@ -347,7 +336,9 @@ class Jsonformer:
                 "attention_mask": attention_mask,
                 "max_new_tokens": self.max_tokens_number,
                 "num_return_sequences": 1,
-                "logits_processor": [self.number_logit_processor],
+                "logits_processor": [
+                    OutputNumbersTokens(tokenizer=self.tokenizer, prompt=self.prompt)
+                ],
                 "stopping_criteria": [
                     NumberStoppingCriteria(
                         tokenizer=self.tokenizer, prompt_length=len(input_tokens[0])
@@ -376,7 +367,7 @@ class Jsonformer:
             # Process response
             response_text = self.tokenizer.decode(response[0], skip_special_tokens=True)
             generated_part = response_text[len(prompt) :].strip().rstrip(".")
-            self.debug(caller="[generate_number]", value=generated_part)
+            self._debug(caller="[generate_number]", value=generated_part)
 
             try:
                 return float(generated_part)
@@ -394,18 +385,18 @@ class Jsonformer:
             if number is not None:
                 # Check constraints
                 if self._is_valid_number(number, min_val, max_val):
-                    self.debug(
+                    self._debug(
                         caller="[generate_number]",
                         value=f"Success on attempt {attempt}: {number}",
                     )
                     return number
                 else:
-                    self.debug(
+                    self._debug(
                         caller="[generate_number]",
                         value=f"Attempt {attempt}: {number} outside range [{min_val}, {max_val}]",
                     )
             else:
-                self.debug(
+                self._debug(
                     caller="[generate_number]",
                     value=f"Attempt {attempt}: Failed to parse number",
                 )
@@ -423,7 +414,7 @@ class Jsonformer:
             f"Failed to generate a valid number{constraint_msg} after {self.num_retries} attempts"
         )
 
-    def generate_boolean(self) -> bool:
+    def _generate_boolean(self) -> bool:
         """
         Generate a boolean value using the language model.
 
@@ -433,8 +424,8 @@ class Jsonformer:
         Returns:
             bool: The generated boolean value
         """
-        prompt = self.get_prompt()
-        self.debug(caller="[generate_boolean]", value=prompt, is_prompt=True)
+        prompt = self._get_prompt()
+        self._debug(caller="[generate_boolean]", value=prompt, is_prompt=True)
 
         # Prepare input
         input_tensor = self.tokenizer.encode(text=prompt, return_tensors="pt").to(
@@ -470,11 +461,11 @@ class Jsonformer:
         false_prob = sum(probs[fid].item() for fid in false_ids)
 
         result = true_prob > false_prob
-        self.debug(caller="[generate_boolean]", value=result)
+        self._debug(caller="[generate_boolean]", value=result)
 
         return result
 
-    def generate_string(self) -> str:
+    def _generate_string(self) -> str:
         """
         Generate a string value using the language model.
 
@@ -488,11 +479,13 @@ class Jsonformer:
         """
         # Handle enum values
         if "enum" in self.current_field_context[1]:
-            return self.generate_enum(enum_values=self.current_field_context[1]["enum"])
+            return self._generate_enum(
+                enum_values=self.current_field_context[1]["enum"]
+            )
 
         # Prepare prompt with opening quote
-        prompt = self.get_prompt() + '"'
-        self.debug(caller="[generate_string]", value=prompt, is_prompt=True)
+        prompt = self._get_prompt() + '"'
+        self._debug(caller="[generate_string]", value=prompt, is_prompt=True)
 
         # Encode and move to model device
         input_tokens = self.tokenizer.encode(
@@ -545,7 +538,7 @@ class Jsonformer:
             skip_special_tokens=True,
             clean_up_tokenization_spaces=True,
         )
-        self.debug(caller="[generate_string]", value=f"|{decoded_text}|")
+        self._debug(caller="[generate_string]", value=f"|{decoded_text}|")
 
         # Extract the string content (up to the closing quote if present)
         if '"' not in decoded_text:
@@ -553,7 +546,7 @@ class Jsonformer:
 
         return decoded_text.split('"')[0].strip()
 
-    def generate_enum(self, enum_values: List[str]) -> str:
+    def _generate_enum(self, enum_values: List[str]) -> str:
         """
         Generate an enum value by selecting the most probable option from the allowed values.
 
@@ -563,8 +556,8 @@ class Jsonformer:
         Returns:
             str: The selected enum value with highest probability
         """
-        prompt = self.get_prompt()
-        self.debug(caller="[generate_enum]", value=prompt, is_prompt=True)
+        prompt = self._get_prompt()
+        self._debug(caller="[generate_enum]", value=prompt, is_prompt=True)
 
         # Prepare input tokens
         input_tokens = self.tokenizer.encode(text=prompt, return_tensors="pt").to(
@@ -594,14 +587,14 @@ class Jsonformer:
         # Select the most probable enum value
         selected_enum = max(enum_probabilities, key=enum_probabilities.get)
 
-        self.debug(
+        self._debug(
             caller="[generate_enum]", value=f"Probabilities: {enum_probabilities}"
         )
-        self.debug(caller="[generate_enum]", value=f"Selected: {selected_enum}")
+        self._debug(caller="[generate_enum]", value=f"Selected: {selected_enum}")
 
         return selected_enum
 
-    def generate_array(
+    def _generate_array(
         self,
         item_schema: Dict[str, Any],
         array: List[Any],
@@ -635,7 +628,7 @@ class Jsonformer:
         min_items = array_schema.get("minItems", 0)
         max_items = array_schema.get("maxItems", self.max_array_length)
 
-        self.debug(
+        self._debug(
             caller="[generate_array]",
             value=f"Constraints: minItems={min_items}, maxItems={max_items}",
         )
@@ -643,7 +636,7 @@ class Jsonformer:
         try:
             # Phase 1: Generate required elements (minItems)
             for i in range(min_items):
-                self.debug(
+                self._debug(
                     caller="[generate_array]",
                     value=f"Generating required element {i+1}/{min_items}",
                 )
@@ -652,7 +645,7 @@ class Jsonformer:
                     self.current_field_context = ("array item", item_schema)
 
                 # Generate an element and add it to the array
-                element = self.generate_value(schema=item_schema, obj=array)
+                element = self._generate_value(schema=item_schema, obj=array)
                 if array and array[-1] == self.generation_marker:
                     array[-1] = element
                 else:
@@ -660,7 +653,7 @@ class Jsonformer:
 
             # Phase 2: Generate optional elements (between minItems and maxItems)
             if min_items < max_items:
-                self.debug(
+                self._debug(
                     caller="[generate_array]",
                     value=f"Generating optional elements (up to {max_items} total)",
                 )
@@ -672,7 +665,7 @@ class Jsonformer:
                         self.current_field_context = ("array item", item_schema)
 
                     # Continue: generate the next element
-                    element = self.generate_value(schema=item_schema, obj=array)
+                    element = self._generate_value(schema=item_schema, obj=array)
                     if array and array[-1] == self.generation_marker:
                         array[-1] = element
                     else:
@@ -680,7 +673,7 @@ class Jsonformer:
 
                     # Check if we should add another element
                     array.append(self.generation_marker)
-                    item_prompt = self.get_prompt()
+                    item_prompt = self._get_prompt()
                     array.pop()  # Remove the marker
 
                     try:
@@ -697,7 +690,11 @@ class Jsonformer:
                             "attention_mask": attention_mask,
                             "max_new_tokens": 1,
                             "num_return_sequences": 1,
-                            "logits_processor": [self.array_end_logit_processor],
+                            "logits_processor": [
+                                OutputCommaAndBracketTokens(
+                                    tokenizer=self.tokenizer, prompt=self.prompt
+                                )
+                            ],
                             "pad_token_id": self.tokenizer.eos_token_id,
                         }
 
@@ -722,7 +719,7 @@ class Jsonformer:
                         last_token = self.tokenizer.decode(
                             response[0][-1], skip_special_tokens=True
                         )
-                        self.debug(
+                        self._debug(
                             caller="[generate_array]",
                             value=f"Model chose: '{last_token}'",
                         )
@@ -732,24 +729,24 @@ class Jsonformer:
                             break
 
                     except Exception as e:
-                        self.debug(
+                        self._debug(
                             caller="[generate_array]",
                             value=f"Error during array continuation: {str(e)}",
                         )
                         break  # Stop on error
 
-            self.debug(
+            self._debug(
                 caller="[generate_array]", value=f"Final array length: {len(array)}"
             )
             return array
 
         except Exception as e:
-            self.debug(
+            self._debug(
                 caller="[generate_array]", value=f"Error generating array: {str(e)}"
             )
             raise ValueError(f"Failed to generate array: {str(e)}")
 
-    def generate_value(
+    def _generate_value(
         self,
         schema: Dict[str, Any],
         obj: Union[Dict[str, Any], List[Any]],
@@ -794,11 +791,11 @@ class Jsonformer:
             if schema_type in ("number", "boolean", "string"):
                 set_marker()
                 if schema_type == "number":
-                    return self.generate_number(schema=schema)
+                    return self._generate_number(schema=schema)
                 elif schema_type == "boolean":
-                    return self.generate_boolean()
+                    return self._generate_boolean()
                 else:  # string
-                    return self.generate_string()
+                    return self._generate_string()
 
             # Handle arrays
             elif schema_type == "array":
@@ -809,7 +806,7 @@ class Jsonformer:
                     obj[key] = new_array
                 else:
                     obj.append(new_array)
-                return self.generate_array(
+                return self._generate_array(
                     item_schema=schema["items"], array=new_array, array_schema=schema
                 )
 
@@ -822,7 +819,7 @@ class Jsonformer:
                     obj[key] = new_obj
                 else:
                     obj.append(new_obj)
-                return self.generate_object(
+                return self._generate_object(
                     properties=schema["properties"], obj=new_obj
                 )
 
@@ -832,7 +829,7 @@ class Jsonformer:
             # Clear context after generation (resource optimization)
             self.current_field_context = None
 
-    def generate_object(
+    def _generate_object(
         self, properties: Dict[str, Any], obj: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
@@ -858,39 +855,77 @@ class Jsonformer:
                 if not isinstance(schema, dict):
                     raise ValueError(f"Invalid schema for property '{key}': {schema}")
 
-                self.debug(
+                self._debug(
                     caller="[generate_object]", value=f"Generating value for '{key}'"
                 )
-                obj[key] = self.generate_value(schema=schema, obj=obj, key=key)
+                obj[key] = self._generate_value(schema=schema, obj=obj, key=key)
 
         except Exception as e:
             raise ValueError(f"Failed to generate object: {str(e)}") from e
 
         return obj
 
-    def __call__(self) -> Dict[str, Any]:
+    def generate(
+        self,
+        schema: Dict[str, Any],
+        prompt: str,
+        *,
+        debug: Optional[bool] = None,
+        max_array_length: Optional[int] = None,
+        max_tokens_number: Optional[int] = None,
+        max_tokens_string: Optional[int] = None,
+        temperature: Optional[float] = None,
+        num_retries: Optional[int] = None,
+    ) -> Dict[str, Any]:
         """
-        Generate a complete JSON object according to the schema.
+        Generate a JSON object according to the schema and prompt.
 
-        This method:
-        1. Validates that the schema is a valid object schema
-        2. Resets the internal state
-        3. Generates a new object according to the schema properties
+        Args:
+            schema (Dict[str, Any]): The schema defining the JSON structure
+            prompt (str): The prompt guiding the generation
+            debug (Optional[bool]): Whether to enable debug mode
+            max_array_length (Optional[int]): The maximum length of arrays to generate
+            max_tokens_number (Optional[int]): The maximum number of tokens to generate for numbers
+            max_tokens_string (Optional[int]): The maximum number of tokens to generate for strings
+            temperature (Optional[float]): The temperature for the generation
+            num_retries (Optional[int]): The maximum number of retries for number generation
 
         Returns:
             Dict[str, Any]: The generated JSON object conforming to the schema
 
         Raises:
-            ValueError: If the schema is invalid or not an object schema
+            ValueError: If schema is not a dictionary or prompt is empty
         """
         # Validate schema
-        if not isinstance(self.schema, dict) or "properties" not in self.schema:
+        if not isinstance(schema, dict) or "properties" not in schema:
             raise ValueError("Schema must be an object schema with 'properties' field")
+        if not prompt.strip():
+            raise ValueError("Prompt cannot be empty")
 
         # Reset internal state
         self.value = {}
 
+        # Update instance variables
+        self.schema = schema
+        self.prompt = prompt
+        self.debug_on = debug if debug is not None else self.debug_on
+        self.max_array_length = (
+            max_array_length if max_array_length is not None else self.max_array_length
+        )
+        self.max_tokens_number = (
+            max_tokens_number
+            if max_tokens_number is not None
+            else self.max_tokens_number
+        )
+        self.max_tokens_string = (
+            max_tokens_string
+            if max_tokens_string is not None
+            else self.max_tokens_string
+        )
+        self.temperature = temperature if temperature is not None else self.temperature
+        self.num_retries = num_retries if num_retries is not None else self.num_retries
+
         # Generate new object
-        return self.generate_object(
+        return self._generate_object(
             properties=self.schema["properties"], obj=self.value
         )
