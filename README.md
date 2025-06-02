@@ -38,7 +38,7 @@ pip install -e .
 Here's a simple example to get you started:
 
 ![Quick Start Example](./docs/img/quick_start_dark.png#gh-dark-mode-only)
-![Quick Start Example](./docs/img/quick_start_light.png#gh-dark-mode-only)
+![Quick Start Example](./docs/img/quick_start_light.png#gh-light-mode-only)
 
 <details>
 <summary>Click to expand code example</summary>
