@@ -427,29 +427,20 @@ class Jsonformer:
                 is_prompt=True,
             )
 
-            input_tokens = self.tokenizer.encode(text=prompt, return_tensors="pt").to(
-                self.model.device
-            )
-
-            generation_kwargs = self._get_generation_kwargs(
-                input_tokens=input_tokens,
+            _, response_text = self._process_tokens(
+                prompt=prompt,
                 max_new_tokens=self.max_tokens_number,
-                logits_processor=[
-                    OutputNumbersTokens(tokenizer=self.tokenizer, prompt=self.prompt)
-                ],
+                logits_processor=[OutputNumbersTokens(tokenizer=self.tokenizer)],
                 stopping_criteria=[
                     NumberStoppingCriteria(
-                        tokenizer=self.tokenizer, prompt_length=len(input_tokens[0])
+                        tokenizer=self.tokenizer,
+                        prompt_length=len(self.tokenizer.encode(prompt)),
                     )
                 ],
                 temperature=current_temperature,
             )
 
-            response = self.model.generate(**generation_kwargs)
-
-            # Process response
-            response_text = self.tokenizer.decode(response[0], skip_special_tokens=True)
-            generated_part = response_text[len(prompt) :].strip().rstrip(".")
+            generated_part = response_text.strip().rstrip(".")
             self._debug(caller="[generate_number]", value=generated_part)
 
             try:
@@ -729,9 +720,7 @@ class Jsonformer:
                             prompt=item_prompt,
                             max_new_tokens=1,
                             logits_processor=[
-                                OutputCommaAndBracketTokens(
-                                    tokenizer=self.tokenizer, prompt=self.prompt
-                                )
+                                OutputCommaAndBracketTokens(tokenizer=self.tokenizer)
                             ],
                         )
 
