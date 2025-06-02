@@ -108,15 +108,12 @@ class OutputNumbersTokens(LogitsProcessor):
     Restricts token generation to only those that can be part of a valid number.
     """
 
-    def __init__(self, tokenizer: PreTrainedTokenizer, prompt: str) -> None:
+    def __init__(self, tokenizer: PreTrainedTokenizer) -> None:
         """
         Args:
             tokenizer: The tokenizer to use.
-            prompt: The prompt to use.
         """
         self.tokenizer = tokenizer
-        self.tokenized_prompt = tokenizer(text=prompt, return_tensors="pt")
-        self.prompt = prompt
         self.allowed_tokens = self._get_allowed_tokens()
 
     def _get_allowed_tokens(self) -> set[int]:
@@ -182,14 +179,12 @@ class OutputCommaAndBracketTokens(LogitsProcessor):
     preventing any other tokens from being generated at array element boundaries.
     """
 
-    def __init__(self, tokenizer: PreTrainedTokenizer, prompt: str) -> None:
+    def __init__(self, tokenizer: PreTrainedTokenizer) -> None:
         """
         Args:
             tokenizer: The tokenizer to use.
-            prompt: The prompt (kept for consistency with other processors).
         """
         self.tokenizer = tokenizer
-        self.tokenized_prompt = tokenizer(text=prompt, return_tensors="pt")
         self.allowed_tokens = self._get_allowed_tokens()
 
     def _get_allowed_tokens(self) -> set[int]:
