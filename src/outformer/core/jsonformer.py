@@ -699,7 +699,7 @@ class Jsonformer:
                     value=f"Generating optional elements (up to {max_items} total)",
                 )
 
-                # Generate at least one element for the array
+                # Generate optional elements (up to maxItems total)
                 for i in range(min_items, max_items):
                     # Set context for array element
                     if item_schema.get("type") in ("number", "boolean", "string"):
@@ -719,54 +719,23 @@ class Jsonformer:
 
                     try:
                         # Use LogitProcessor to force choice between "," and "]"
-                        input_tokens = self.tokenizer.encode(
-                            text=item_prompt, return_tensors="pt"
-                        ).to(self.model.device)
-
-                        attention_mask = torch.ones_like(input_tokens)
-
-                        # Set base generation parameters
-                        generation_kwargs = {
-                            "inputs": input_tokens,
-                            "attention_mask": attention_mask,
-                            "max_new_tokens": 1,
-                            "num_return_sequences": 1,
-                            "logits_processor": [
+                        _, response_text = self._process_tokens(
+                            prompt=item_prompt,
+                            max_new_tokens=1,
+                            logits_processor=[
                                 OutputCommaAndBracketTokens(
                                     tokenizer=self.tokenizer, prompt=self.prompt
                                 )
                             ],
-                            "pad_token_id": self.tokenizer.eos_token_id,
-                        }
-
-                        # Add sampling parameters only when temperature > 0
-                        if self.temperature > 0:
-                            generation_kwargs.update(
-                                {
-                                    "do_sample": True,
-                                    "temperature": self.temperature,
-                                }
-                            )
-                        else:
-                            generation_kwargs["do_sample"] = False
-                            generation_kwargs["temperature"] = None
-                            generation_kwargs["top_p"] = None
-                            generation_kwargs["top_k"] = None
-
-                        # Generate exactly one token, constrained to only "," and "]"
-                        response = self.model.generate(**generation_kwargs)
-
-                        # Extract the generated token
-                        last_token = self.tokenizer.decode(
-                            response[0][-1], skip_special_tokens=True
                         )
+
                         self._debug(
                             caller="[generate_array]",
-                            value=f"Model chose: '{last_token}'",
+                            value=f"Model chose: '{response_text}'",
                         )
 
                         # Stop if model chose closing bracket
-                        if "]" in last_token:
+                        if "]" in response_text:
                             break
 
                     except Exception as e:
