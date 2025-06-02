@@ -596,7 +596,13 @@ class Jsonformer:
 
         Returns:
             str: The selected enum value with highest probability
+
+        Raises:
+            ValueError: If the enum values list is empty
         """
+        if not enum_values:
+            raise ValueError("Enum values list cannot be empty")
+
         prompt = self._get_prompt()
         self._debug(caller="[generate_enum]", value=prompt, is_prompt=True)
 
