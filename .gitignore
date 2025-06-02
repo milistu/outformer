@@ -175,3 +175,4 @@ cython_debug/
 
 # Project specific
 poetry.lock
+*.DS_Store
