@@ -36,21 +36,21 @@ class Jsonformer:
         max_tokens_string: int = 10,
         temperature: float = 0.7,
         generation_marker: str = "|GENERATION|",
-        num_retries: int = 3,
+        max_attempts: int = 3,
     ) -> None:
         """
         Initialize a Jsonformer instance.
 
         Args:
-            model (PreTrainedModel): The model to use for generation.
-            tokenizer (PreTrainedTokenizer): The tokenizer to use for generation.
-            debug (bool): Whether to print debug information.
-            max_array_length (int): The maximum number of elements in an array.
-            max_tokens_number (int): The maximum number of tokens in a number.
-            max_tokens_string (int): The maximum number of tokens in a string.
-            temperature (float): The temperature to use for generation.
-            generation_marker (str): The marker used to track the current generation position in the JSON.
-            num_retries (int): The maximum number of retries for generation (currently used in number generation).
+            model (PreTrainedModel): The model to use for generation
+            tokenizer (PreTrainedTokenizer): The tokenizer to use for generation
+            debug (bool): Whether to print debug information
+            max_array_length (int): The maximum number of elements in an array
+            max_tokens_number (int): The maximum number of tokens in a number
+            max_tokens_string (int): The maximum number of tokens in a string
+            temperature (float): The temperature to use for generation
+            generation_marker (str): The marker used to track the current generation position in the JSON
+            max_attempts (int): The maximum number of attempts for value generation (currently used in number generation)
         """
         self.model = model
         self.tokenizer = tokenizer
@@ -66,7 +66,7 @@ class Jsonformer:
         self.max_tokens_number = max_tokens_number
         self.max_tokens_string = max_tokens_string
         self.temperature = temperature
-        self.num_retries = num_retries
+        self.max_attempts = max_attempts
 
         # Marker used to track where generation should happen
         self.generation_marker = generation_marker
@@ -398,13 +398,13 @@ class Jsonformer:
         Args:
             schema (Optional[Dict[str, Any]]): The schema with potential min/max constraints
             temperature (Optional[float]): Optional temperature override for generation
-            temperature_multiplier (float): Factor to increase temperature by on retries
+            temperature_multiplier (float): Factor to increase temperature by on each attempt
 
         Returns:
             float: The generated number value
 
         Raises:
-            ValueError: If unable to generate a valid number after max retries
+            ValueError: If unable to generate a valid number after max attempts
         """
 
         # Extract constraints
@@ -414,7 +414,7 @@ class Jsonformer:
         if min_val or max_val:
             self._debug(
                 caller="[generate_number]",
-                value=f"Constraints: min={min_val}, max={max_val}, retries={self.num_retries}",
+                value=f"Constraints: min={min_val}, max={max_val}, attempts={self.max_attempts}",
             )
 
         def _attempt_generation(
@@ -461,7 +461,7 @@ class Jsonformer:
         current_temp = temperature or self.temperature
         attempt = 1
 
-        while attempt <= self.num_retries + 1:
+        while attempt <= self.max_attempts + 1:
             number = _attempt_generation(
                 current_temperature=current_temp, attempt=attempt
             )
@@ -494,7 +494,7 @@ class Jsonformer:
             constraint_msg = f" within range [{min_val}, {max_val}]"
 
         raise ValueError(
-            f"Failed to generate a valid number{constraint_msg} after {self.num_retries} attempts"
+            f"Failed to generate a valid number{constraint_msg} after {self.max_attempts} attempts"
         )
 
     def _generate_boolean(self) -> bool:
@@ -954,7 +954,7 @@ class Jsonformer:
         max_tokens_number: Optional[int] = None,
         max_tokens_string: Optional[int] = None,
         temperature: Optional[float] = None,
-        num_retries: Optional[int] = None,
+        max_attempts: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Generate a JSON object according to the schema and prompt.
@@ -967,7 +967,7 @@ class Jsonformer:
             max_tokens_number (Optional[int]): The maximum number of tokens to generate for numbers
             max_tokens_string (Optional[int]): The maximum number of tokens to generate for strings
             temperature (Optional[float]): The temperature for the generation
-            num_retries (Optional[int]): The maximum number of retries for number generation
+            max_attempts (Optional[int]): The maximum number of attempts for value generation (currently used in number generation)
 
         Returns:
             Dict[str, Any]: The generated JSON object conforming to the schema
@@ -1000,7 +1000,9 @@ class Jsonformer:
             else self.max_tokens_string
         )
         self.temperature = temperature if temperature is not None else self.temperature
-        self.num_retries = num_retries if num_retries is not None else self.num_retries
+        self.max_attempts = (
+            max_attempts if max_attempts is not None else self.max_attempts
+        )
 
         return self._generate_object(
             properties=self.schema["properties"], obj=self.value
