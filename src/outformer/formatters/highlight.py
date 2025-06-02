@@ -1,33 +1,33 @@
 from termcolor import colored
-from typing import Iterable
+from typing import Iterable, Union
 
 
 def highlight_values(
-    values: dict | list | str,
-    color: str | tuple[int, int, int] | None = "magenta",
-    on_color: str | tuple[int, int, int] | None = None,
-    attrs: Iterable[str] | None = None,
+    values: Union[dict, list, str],
+    color: Union[str, tuple[int, int, int], None] = "magenta",
+    on_color: Union[str, tuple[int, int, int], None] = None,
+    attrs: Union[Iterable[str], None] = None,
 ) -> None:
     """
     Recursively prints a JSON object with highlighted values.
 
     Args:
-        value (dict | list | str): The JSON object to print
-        color (str | tuple[int, int, int] | None): The color to use for the highlighted values
-        on_color (str | tuple[int, int, int] | None): The color to use for the background of the highlighted values
-        attrs (Iterable[str] | None): Additional attributes to use for the highlighted values
+        values (Union[dict, list, str]): The JSON object to print
+        color (Union[str, tuple[int, int, int], None]): The color to use for the highlighted values
+        on_color (Union[str, tuple[int, int, int], None]): The color to use for the background of the highlighted values
+        attrs (Union[Iterable[str], None]): Additional attributes to use for the highlighted values
     """
 
     def recursive_print(
-        obj: dict | list | str, indent: int = 0, is_last_element: bool = True
+        obj: Union[dict, list, str], indent: int = 0, is_last_element: bool = True
     ) -> None:
         """
         Helper function that recursively prints the JSON structure.
 
         Args:
-            obj: The current object to print
-            indent: The current indentation level
-            is_last_element: Whether this is the last element in an array/object
+            obj (Union[dict, list, str]): The current object to print
+            indent (int): The current indentation level
+            is_last_element (bool): Whether this is the last element in an array/object
         """
         if isinstance(obj, dict):
             # Print opening brace for objects
