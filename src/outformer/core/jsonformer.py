@@ -560,8 +560,7 @@ class Jsonformer:
         Returns:
             str: The generated string value, stripped of quotes and whitespace
         """
-        # Handle enum values
-        if "enum" in self.current_field_context[1]:
+        if self.current_field_context and "enum" in self.current_field_context[1]:
             return self._generate_enum(
                 enum_values=self.current_field_context[1]["enum"]
             )
