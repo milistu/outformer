@@ -1,11 +1,13 @@
+<!-- ![Outformer Logo](https://raw.githubusercontent.com/milistu/outformer/main/docs/img/logo_dark.png "Outformer Logo") -->
 ![Outformer Logo](./docs/img/logo_dark.png#gh-dark-mode-only "Outformer Dark Logo")
 ![Outformer Logo](./docs/img/logo_light.png#gh-light-mode-only "Outformer Light Logo")
 
 # Outformer: Structure Outputs from Language Models
 
-[![Python Version](https://img.shields.io/badge/python-3.10%2B-8c52ff.svg)](https://www.python.org/downloads/)
-[![PyPI version](https://badge.fury.io/py/outformer.svg?color=5ce1e6)](https://badge.fury.io/py/outformer)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg?color=393be5)](LICENSE)
+[![PyPI - Package Version](https://img.shields.io/pypi/v/outformer?logo=pypi&style=flat&color=8c52ff)](https://pypi.org/project/outformer/)
+[![Python Versions](https://img.shields.io/pypi/pyversions/outformer?logo=python&logoColor=5ce1e6)](https://pypi.org/project/outformer/)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg?color=393be5)](https://github.com/milistu/outformer/blob/main/LICENSE)
+[![Docs - GitHub.io](https://img.shields.io/static/v1?logo=github&style=flat&color=5ce1e6&label=docs&message=outformer)](https://outformer.readthedocs.io/en/latest/)
 
 Outformer is a powerful library that enables language models to generate structured outputs. It ensures always valid JSON outputs by generating only values while maintaining the structural integrity of your schema.
 
@@ -19,7 +21,7 @@ Outformer is a powerful library that enables language models to generate structu
 
 ## Installation
 
-We recommend **Python 3.10+, [PyTorch 2.7.0+](https://pytorch.org/get-started/locally/), [transformers](https://github.com/huggingface/transformers) v4.51.3+**.
+We recommend **Python 3.10+, [PyTorch](https://pytorch.org/get-started/locally/) 2.7.0+, [transformers](https://github.com/huggingface/transformers) v4.51.3+**.
 
 ### Install via pip
 ```bash
