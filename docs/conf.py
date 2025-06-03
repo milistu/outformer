@@ -14,9 +14,6 @@ release = "0.1.0"
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
 
-# # Add project to the Python path
-# sys.path.insert(0, os.path.abspath("../src"))
-
 extensions = [
     "sphinx.ext.autodoc",  # Auto-generate docs from docstrings
     "sphinx.ext.viewcode",  # Add source code links
@@ -54,7 +51,6 @@ html_js_files = [
 # Theme options
 html_theme_options = {
     "logo_only": False,
-    "display_version": True,
     "prev_next_buttons_location": "bottom",
     "style_external_links": False,
     "collapse_navigation": True,
