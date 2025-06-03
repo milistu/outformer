@@ -55,3 +55,17 @@ a.icon-home {
     width: auto;
     margin: 10px auto;
 }
+
+/* Minimize space between logo and GitHub button */
+.main-logo {
+    margin-bottom: 8px !important;
+    padding-bottom: 0 !important;
+}
+.github-repo {
+    margin-top: 0 !important;
+    padding-top: 0 !important;
+}
+.main-logo img {
+    margin-bottom: 0 !important;
+    display: block;
+}

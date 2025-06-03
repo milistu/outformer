@@ -46,11 +46,11 @@ html_js_files = [
 ]
 
 # Logo
-# html_logo = "_static/logo_dark.png"
+html_logo = "_static/logo_dark_transparent.png"
 
 # Theme options
 html_theme_options = {
-    "logo_only": False,
+    "logo_only": True,
     "prev_next_buttons_location": "bottom",
     "style_external_links": False,
     "collapse_navigation": True,
