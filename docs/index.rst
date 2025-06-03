@@ -1,13 +1,17 @@
 Welcome to Outformer's Documentation!
 =====================================
 
-.. image:: https://img.shields.io/badge/python-3.10%2B-blue.svg
-   :target: https://www.python.org/downloads/
-   :alt: Python Version
+.. raw:: html
 
-.. image:: https://badge.fury.io/py/outformer.svg
-   :target: https://badge.fury.io/py/outformer
-   :alt: PyPI version
+   <div class="main-logo">
+      <img src="_static/logo_dark.png" alt="Outformer Logo">
+   </div>
+
+   <div class="badges-container">
+      <img src="https://img.shields.io/badge/python-3.10%2B-8c52ff.svg" alt="Python Version">
+      <img src="https://badge.fury.io/py/outformer.svg?color=5ce1e6" alt="PyPI version">
+      <img src="https://img.shields.io/github/license/milistu/outformer.svg?color=393be5" alt="License">
+   </div>
 
 Outformer is a powerful library that enables language models to generate structured outputs. 
 It ensures always valid JSON outputs by generating only values while maintaining the structural integrity of your schema.
@@ -27,10 +31,7 @@ Features
 
    installation
    quickstart
-   advanced_usage
    api_reference
-   examples
-   contributing
 
 Indices and tables
 ==================

@@ -14,6 +14,9 @@ release = "0.1.0"
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
 
+# # Add project to the Python path
+# sys.path.insert(0, os.path.abspath("../src"))
+
 extensions = [
     "sphinx.ext.autodoc",  # Auto-generate docs from docstrings
     "sphinx.ext.viewcode",  # Add source code links
@@ -36,6 +39,17 @@ exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 
 html_theme = "sphinx_rtd_theme"
 html_static_path = ["_static"]
+
+# Custom CSS and JS
+html_css_files = [
+    "custom.css",
+]
+html_js_files = [
+    "custom.js",
+]
+
+# Logo
+# html_logo = "_static/logo_dark.png"
 
 # Theme options
 html_theme_options = {

@@ -1,0 +1,57 @@
+.wy-nav-content {
+    max-width: 1280px;
+}
+
+a.icon-home {
+    font-size: 1.4em;
+}
+
+.wy-side-nav-search .wy-dropdown>a:hover, 
+.wy-side-nav-search>a:hover {
+    background: none;
+}
+
+.project-name {
+    font-size: 1.4em;
+}
+
+.wy-side-nav-search {
+    padding-top: 0px;
+}
+
+/* GitHub button container */
+.github-repo {
+    padding: 10px 0;
+    text-align: center;
+}
+
+.github-repo > div {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+/* Badges container */
+.badges-container {
+    text-align: center;
+    margin: 15px 0;
+}
+
+.badges-container img {
+    margin: 2px 4px;
+    vertical-align: middle;
+}
+
+/* Main content improvements */
+.rst-content .document h1 {
+    margin-bottom: 30px;
+    padding-bottom: 15px;
+    border-bottom: 2px solid #e1e4e5;
+}
+
+/* Logo adjustments */
+.wy-side-nav-search .wy-dropdown > a img.logo {
+    max-height: 50px;
+    width: auto;
+    margin: 10px auto;
+}
