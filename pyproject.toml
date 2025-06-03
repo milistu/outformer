@@ -1,12 +1,26 @@
 [project]
 name = "outformer"
-version = "0.1.0"
+version = "0.1.2"
 description = "Structure Outputs from Language Models"
 authors = [
     {name = "milistu",email = "studen.m98@gmail.com"}
 ]
-license = {text = "Apache-2.0"}
+license = {text = "MIT"}
+repository = "https://github.com/milistu/outformer"
+documentation = "outformer.readthedocs.io"
 readme = "README.md"
+
+keywords = ["JSON", "structured output", "LLM", "Structure", "Transformers", "NLP"]
+
+classifiers = [
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
 requires-python = "<=3.12, >=3.10"
 dependencies = [
     "transformers (>=4.51.3,<5.0.0)",
