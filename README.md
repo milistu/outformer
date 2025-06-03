@@ -3,9 +3,9 @@
 
 # Outformer: Structure Outputs from Language Models
 
-[![PyPI version](https://badge.fury.io/py/outformer.svg)](https://badge.fury.io/py/outformer)
-[![Python Version](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Python Version](https://img.shields.io/badge/python-3.10%2B-8c52ff.svg)](https://www.python.org/downloads/)
+[![PyPI version](https://badge.fury.io/py/outformer.svg?color=5ce1e6)](https://badge.fury.io/py/outformer)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg?color=393be5)](LICENSE)
 
 Outformer is a powerful library that enables language models to generate structured outputs. It ensures always valid JSON outputs by generating only values while maintaining the structural integrity of your schema.
 
