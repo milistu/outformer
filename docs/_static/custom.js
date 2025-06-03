@@ -1,3 +1,4 @@
+// Based on sentence-transformers implementation
 function addGithubButton() {
     const div = `
         <div class="github-repo">

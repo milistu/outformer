@@ -3,10 +3,6 @@ Welcome to Outformer's Documentation!
 
 .. raw:: html
 
-   <div class="main-logo">
-      <img src="_static/logo_dark.png" alt="Outformer Logo">
-   </div>
-
    <div class="badges-container">
       <img src="https://img.shields.io/badge/python-3.10%2B-8c52ff.svg" alt="Python Version">
       <img src="https://badge.fury.io/py/outformer.svg?color=5ce1e6" alt="PyPI version">
