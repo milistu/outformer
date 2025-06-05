@@ -55,7 +55,7 @@ class Jsonformer:
         self.model = model
         self.tokenizer = tokenizer
         self.value = {}  # The JSON object being built
-        self.current_field_context = None  # Track current field for comment injection
+        self.current_schema = None
 
         self.prompt = None
         self.schema = None
@@ -90,13 +90,12 @@ class Jsonformer:
         color = "yellow" if is_prompt else "blue"
         cprint(text=value, color=color)
 
-    def _build_field_guidance(self, schema: Dict[str, Any], field_name: str) -> str:
+    def _build_field_guidance(self, schema: Dict[str, Any]) -> str:
         """
         Build a guidance string for a specific field based on its schema.
 
         Args:
             schema (Dict[str, Any]): The schema for the field.
-            field_name (str): The name of the field.
 
         Returns:
             str: A guidance string for the field.
@@ -236,11 +235,8 @@ class Jsonformer:
             )
 
         # Inject comment if we have current field context
-        if self.current_field_context:
-            field_name, field_schema = self.current_field_context
-            guidance = self._build_field_guidance(
-                schema=field_schema, field_name=field_name
-            )
+        if self.current_schema:
+            guidance = self._build_field_guidance(schema=self.current_schema)
             if guidance:
                 json_progress = self._inject_comment_at_generation_point(
                     json_progress=json_progress, comment=guidance
@@ -551,10 +547,8 @@ class Jsonformer:
         Returns:
             str: The generated string value, stripped of quotes and whitespace
         """
-        if self.current_field_context and "enum" in self.current_field_context[1]:
-            return self._generate_enum(
-                enum_values=self.current_field_context[1]["enum"]
-            )
+        if self.current_schema and "enum" in self.current_schema:
+            return self._generate_enum(enum_values=self.current_schema["enum"])
 
         # Prepare prompt with opening quote
         prompt = self._get_prompt() + '"'
@@ -678,9 +672,6 @@ class Jsonformer:
                     caller="[generate_array]",
                     value=f"Generating required element {i+1}/{min_items}",
                 )
-                # Set context for array element
-                if item_schema.get("type") in ("number", "boolean", "string"):
-                    self.current_field_context = ("array item", item_schema)
 
                 # Generate an element and add it to the array
                 element = self._generate_value(schema=item_schema, obj=array)
@@ -698,9 +689,6 @@ class Jsonformer:
 
                 # Generate optional elements (up to maxItems total)
                 for i in range(min_items, max_items):
-                    # Set context for array element
-                    if item_schema.get("type") in ("number", "boolean", "string"):
-                        self.current_field_context = ("array item", item_schema)
 
                     # Continue: generate the next element
                     element = self._generate_value(schema=item_schema, obj=array)
@@ -781,8 +769,8 @@ class Jsonformer:
         schema_type = schema["type"]
 
         # Set context for field-specific guidance
-        if schema_type in ("number", "boolean", "string") and key:
-            self.current_field_context = (key, schema)
+        if schema_type in ("number", "boolean", "string"):
+            self.current_schema = schema
 
         # Helper function to set generation marker
         def set_marker():
@@ -832,7 +820,7 @@ class Jsonformer:
                 raise ValueError(f"Unsupported schema type: {schema_type}")
         finally:
             # Clear context after generation (resource optimization)
-            self.current_field_context = None
+            self.current_schema = None
 
     def _generate_object(
         self, properties: Dict[str, Any], obj: Dict[str, Any]
