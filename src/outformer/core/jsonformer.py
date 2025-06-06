@@ -628,10 +628,9 @@ class Jsonformer:
 
     def _generate_array(
         self,
-        item_schema: Dict[str, Any],
+        schema: Dict[str, Any],
         array: List[Any],
-        array_schema: Dict[str, Any],
-    ) -> List[Any]:  # TODO: I think we do not need two schemas
+    ) -> List[Any]:
         """
         Generate an array with elements conforming to the item schema.
 
@@ -641,9 +640,8 @@ class Jsonformer:
         - Falls back to model decision only when constraints allow it
 
         Args:
-            item_schema (Dict[str, Any]): The schema defining the type and constraints for array items
+            schema (Dict[str, Any]): The schema defining the array constraints
             array (List[Any]): The array to populate with generated elements
-            array_schema (Dict[str, Any]): The schema defining the array constraints
 
         Returns:
             List[Any]: The populated array with generated elements
@@ -651,14 +649,17 @@ class Jsonformer:
         Raises:
             ValueError: If the item schema is invalid or generation fails
         """
-        if not isinstance(item_schema, dict) or "type" not in item_schema:
+        if "items" not in schema:
+            raise ValueError("Array schema must contain 'items' field")
+
+        if not isinstance(schema["items"], dict) or "type" not in schema["items"]:
             raise ValueError(
                 "Invalid item schema: must be a dictionary with 'type' key"
             )
 
         # Extract constraints
-        min_items = array_schema.get("minItems", 0)
-        max_items = array_schema.get("maxItems", self.max_array_length)
+        min_items = schema.get("minItems", 0)
+        max_items = schema.get("maxItems", self.max_array_length)
 
         self._debug(
             caller="[generate_array]",
@@ -674,7 +675,7 @@ class Jsonformer:
                 )
 
                 # Generate an element and add it to the array
-                element = self._generate_value(schema=item_schema, obj=array)
+                element = self._generate_value(schema=schema["items"], obj=array)
                 array[-1] = element
 
             # Phase 2: Generate optional elements (between minItems and maxItems)
@@ -688,7 +689,7 @@ class Jsonformer:
                 for i in range(min_items, max_items):
 
                     # Continue: generate the next element
-                    element = self._generate_value(schema=item_schema, obj=array)
+                    element = self._generate_value(schema=schema["items"], obj=array)
                     array[-1] = element
 
                     # After inserting the element, decide if we should keep going
@@ -792,9 +793,7 @@ class Jsonformer:
                     obj[key] = new_array
                 else:
                     obj.append(new_array)
-                return self._generate_array(
-                    item_schema=schema["items"], array=new_array, array_schema=schema
-                )
+                return self._generate_array(schema=schema, array=new_array)
 
             # Handle objects
             elif schema_type == "object":
