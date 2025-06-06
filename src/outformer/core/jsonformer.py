@@ -631,7 +631,7 @@ class Jsonformer:
         item_schema: Dict[str, Any],
         array: List[Any],
         array_schema: Dict[str, Any],
-    ) -> List[Any]:
+    ) -> List[Any]:  # TODO: I think we do not need two schemas
         """
         Generate an array with elements conforming to the item schema.
 
@@ -675,10 +675,7 @@ class Jsonformer:
 
                 # Generate an element and add it to the array
                 element = self._generate_value(schema=item_schema, obj=array)
-                if array and array[-1] == self.generation_marker:
-                    array[-1] = element
-                else:
-                    array.append(element)
+                array[-1] = element
 
             # Phase 2: Generate optional elements (between minItems and maxItems)
             if min_items < max_items:
@@ -692,15 +689,12 @@ class Jsonformer:
 
                     # Continue: generate the next element
                     element = self._generate_value(schema=item_schema, obj=array)
-                    if array and array[-1] == self.generation_marker:
-                        array[-1] = element
-                    else:
-                        array.append(element)
+                    array[-1] = element
 
-                    # Check if we should add another element
+                    # After inserting the element, decide if we should keep going
                     array.append(self.generation_marker)
                     item_prompt = self._get_prompt()
-                    array.pop()  # Remove the marker
+                    array.pop()
 
                     try:
                         # Use LogitProcessor to force choice between "," and "]"
@@ -717,7 +711,6 @@ class Jsonformer:
                             value=f"Model chose: '{response_text}'",
                         )
 
-                        # Stop if model chose closing bracket
                         if "]" in response_text:
                             break
 
@@ -726,7 +719,7 @@ class Jsonformer:
                             caller="[generate_array]",
                             value=f"Error during array continuation: {str(e)}",
                         )
-                        break  # Stop on error
+                        break
 
             self._debug(
                 caller="[generate_array]", value=f"Final array length: {len(array)}"
