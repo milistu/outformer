@@ -55,7 +55,7 @@ class Jsonformer:
         self.model = model
         self.tokenizer = tokenizer
         self.value = {}  # The JSON object being built
-        self.current_field_context = None  # Track current field for comment injection
+        self.current_schema = None
 
         self.prompt = None
         self.schema = None
@@ -90,13 +90,12 @@ class Jsonformer:
         color = "yellow" if is_prompt else "blue"
         cprint(text=value, color=color)
 
-    def _build_field_guidance(self, schema: Dict[str, Any], field_name: str) -> str:
+    def _build_field_guidance(self, schema: Dict[str, Any]) -> str:
         """
         Build a guidance string for a specific field based on its schema.
 
         Args:
             schema (Dict[str, Any]): The schema for the field.
-            field_name (str): The name of the field.
 
         Returns:
             str: A guidance string for the field.
@@ -236,11 +235,8 @@ class Jsonformer:
             )
 
         # Inject comment if we have current field context
-        if self.current_field_context:
-            field_name, field_schema = self.current_field_context
-            guidance = self._build_field_guidance(
-                schema=field_schema, field_name=field_name
-            )
+        if self.current_schema:
+            guidance = self._build_field_guidance(schema=self.current_schema)
             if guidance:
                 json_progress = self._inject_comment_at_generation_point(
                     json_progress=json_progress, comment=guidance
@@ -551,10 +547,8 @@ class Jsonformer:
         Returns:
             str: The generated string value, stripped of quotes and whitespace
         """
-        if self.current_field_context and "enum" in self.current_field_context[1]:
-            return self._generate_enum(
-                enum_values=self.current_field_context[1]["enum"]
-            )
+        if self.current_schema and "enum" in self.current_schema:
+            return self._generate_enum(enum_values=self.current_schema["enum"])
 
         # Prepare prompt with opening quote
         prompt = self._get_prompt() + '"'
@@ -634,9 +628,8 @@ class Jsonformer:
 
     def _generate_array(
         self,
-        item_schema: Dict[str, Any],
+        schema: Dict[str, Any],
         array: List[Any],
-        array_schema: Dict[str, Any],
     ) -> List[Any]:
         """
         Generate an array with elements conforming to the item schema.
@@ -647,9 +640,8 @@ class Jsonformer:
         - Falls back to model decision only when constraints allow it
 
         Args:
-            item_schema (Dict[str, Any]): The schema defining the type and constraints for array items
+            schema (Dict[str, Any]): The schema defining the array constraints
             array (List[Any]): The array to populate with generated elements
-            array_schema (Dict[str, Any]): The schema defining the array constraints
 
         Returns:
             List[Any]: The populated array with generated elements
@@ -657,14 +649,17 @@ class Jsonformer:
         Raises:
             ValueError: If the item schema is invalid or generation fails
         """
-        if not isinstance(item_schema, dict) or "type" not in item_schema:
+        if "items" not in schema:
+            raise ValueError("Array schema must contain 'items' field")
+
+        if not isinstance(schema["items"], dict) or "type" not in schema["items"]:
             raise ValueError(
                 "Invalid item schema: must be a dictionary with 'type' key"
             )
 
         # Extract constraints
-        min_items = array_schema.get("minItems", 0)
-        max_items = array_schema.get("maxItems", self.max_array_length)
+        min_items = schema.get("minItems", 0)
+        max_items = schema.get("maxItems", self.max_array_length)
 
         self._debug(
             caller="[generate_array]",
@@ -678,16 +673,10 @@ class Jsonformer:
                     caller="[generate_array]",
                     value=f"Generating required element {i+1}/{min_items}",
                 )
-                # Set context for array element
-                if item_schema.get("type") in ("number", "boolean", "string"):
-                    self.current_field_context = ("array item", item_schema)
 
                 # Generate an element and add it to the array
-                element = self._generate_value(schema=item_schema, obj=array)
-                if array and array[-1] == self.generation_marker:
-                    array[-1] = element
-                else:
-                    array.append(element)
+                element = self._generate_value(schema=schema["items"], obj=array)
+                array[-1] = element
 
             # Phase 2: Generate optional elements (between minItems and maxItems)
             if min_items < max_items:
@@ -698,21 +687,10 @@ class Jsonformer:
 
                 # Generate optional elements (up to maxItems total)
                 for i in range(min_items, max_items):
-                    # Set context for array element
-                    if item_schema.get("type") in ("number", "boolean", "string"):
-                        self.current_field_context = ("array item", item_schema)
-
-                    # Continue: generate the next element
-                    element = self._generate_value(schema=item_schema, obj=array)
-                    if array and array[-1] == self.generation_marker:
-                        array[-1] = element
-                    else:
-                        array.append(element)
-
-                    # Check if we should add another element
+                    # After inserting the element, decide if we should keep going
                     array.append(self.generation_marker)
                     item_prompt = self._get_prompt()
-                    array.pop()  # Remove the marker
+                    array.pop()
 
                     try:
                         # Use LogitProcessor to force choice between "," and "]"
@@ -729,16 +707,21 @@ class Jsonformer:
                             value=f"Model chose: '{response_text}'",
                         )
 
-                        # Stop if model chose closing bracket
                         if "]" in response_text:
                             break
+
+                        # Continue: generate the next element
+                        element = self._generate_value(
+                            schema=schema["items"], obj=array
+                        )
+                        array[-1] = element
 
                     except Exception as e:
                         self._debug(
                             caller="[generate_array]",
                             value=f"Error during array continuation: {str(e)}",
                         )
-                        break  # Stop on error
+                        break
 
             self._debug(
                 caller="[generate_array]", value=f"Final array length: {len(array)}"
@@ -781,8 +764,8 @@ class Jsonformer:
         schema_type = schema["type"]
 
         # Set context for field-specific guidance
-        if schema_type in ("number", "boolean", "string") and key:
-            self.current_field_context = (key, schema)
+        if schema_type in ("number", "boolean", "string"):
+            self.current_schema = schema
 
         # Helper function to set generation marker
         def set_marker():
@@ -811,9 +794,7 @@ class Jsonformer:
                     obj[key] = new_array
                 else:
                     obj.append(new_array)
-                return self._generate_array(
-                    item_schema=schema["items"], array=new_array, array_schema=schema
-                )
+                return self._generate_array(schema=schema, array=new_array)
 
             # Handle objects
             elif schema_type == "object":
@@ -832,7 +813,7 @@ class Jsonformer:
                 raise ValueError(f"Unsupported schema type: {schema_type}")
         finally:
             # Clear context after generation (resource optimization)
-            self.current_field_context = None
+            self.current_schema = None
 
     def _generate_object(
         self, properties: Dict[str, Any], obj: Dict[str, Any]
