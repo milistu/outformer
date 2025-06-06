@@ -687,11 +687,6 @@ class Jsonformer:
 
                 # Generate optional elements (up to maxItems total)
                 for i in range(min_items, max_items):
-
-                    # Continue: generate the next element
-                    element = self._generate_value(schema=schema["items"], obj=array)
-                    array[-1] = element
-
                     # After inserting the element, decide if we should keep going
                     array.append(self.generation_marker)
                     item_prompt = self._get_prompt()
@@ -714,6 +709,12 @@ class Jsonformer:
 
                         if "]" in response_text:
                             break
+
+                        # Continue: generate the next element
+                        element = self._generate_value(
+                            schema=schema["items"], obj=array
+                        )
+                        array[-1] = element
 
                     except Exception as e:
                         self._debug(
