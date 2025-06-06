@@ -5,9 +5,8 @@ from outformer import Jsonformer, highlight_values
 
 def main():
     model_name = "Qwen/Qwen3-1.7B"
-    cache_dir = ".cache"
 
-    model = AutoModelForCausalLM.from_pretrained(model_name, cache_dir=cache_dir)
+    model = AutoModelForCausalLM.from_pretrained(model_name)
     tokenizer = AutoTokenizer.from_pretrained(model_name)
 
     schema = {
