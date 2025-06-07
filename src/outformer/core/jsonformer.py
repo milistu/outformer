@@ -574,7 +574,7 @@ class Jsonformer:
 
     def _generate_enum(self, enum_values: List[str]) -> str:
         """
-        Generate an enum value by selecting the most probable option from the allowed values.
+        Generate an enum value token by token and selecting the most probable option from the allowed values.
 
         Args:
             enum_values (List[str]): List of allowed enum values
@@ -588,43 +588,82 @@ class Jsonformer:
         if not enum_values:
             raise ValueError("Enum values list cannot be empty")
 
-        prompt = self._get_prompt()
-        self._debug(caller="[generate_enum]", value=prompt, is_prompt=True)
-
-        # Prepare input tokens
-        input_tokens = self.tokenizer.encode(text=prompt, return_tensors="pt").to(
-            self.model.device
-        )
-        attention_mask = torch.ones_like(input_tokens)
-
-        # Get model output
-        with torch.no_grad():
-            outputs = self.model(input_tokens, attention_mask=attention_mask)
-            logits = outputs.logits[0, -1] / self.temperature
-            probs = torch.nn.functional.softmax(logits, dim=0)
-
-        # Calculate probabilities for each enum value
-        enum_probabilities = {}
+        # Get all possible tokens for each enum value
+        enum_tokens = {}
         for value in enum_values:
             try:
                 tokens = self.tokenizer.encode(value, add_special_tokens=False)
                 if tokens:
-                    first_token_id = tokens[0]
-                    enum_probabilities[value] = probs[first_token_id].item()
+                    enum_tokens[value] = tokens
                 else:
-                    enum_probabilities[value] = 0.0
+                    enum_tokens[value] = []
             except Exception:
-                enum_probabilities[value] = 0.0
+                enum_tokens[value] = []
 
-        # Select the most probable enum value
-        selected_enum = max(enum_probabilities, key=enum_probabilities.get)
+        enum_tokens = {k: v for k, v in enum_tokens.items() if v}
+        if not enum_tokens:
+            raise ValueError("No valid enum values could be tokenized")
 
-        self._debug(
-            caller="[generate_enum]", value=f"Probabilities: {enum_probabilities}"
-        )
-        self._debug(caller="[generate_enum]", value=f"Selected: {selected_enum}")
+        # Keep track of possible matches as we generate tokens
+        possible_matches = list(enum_tokens.keys())
+        generated_tokens = []
 
-        return selected_enum
+        while possible_matches:
+            prompt = self._get_prompt()
+            if generated_tokens:
+                # Add already generated tokens to the prompt
+                prompt += self.tokenizer.decode(generated_tokens)
+
+            self._debug(caller="[generate_enum]", value=prompt, is_prompt=True)
+
+            input_tokens = self.tokenizer.encode(text=prompt, return_tensors="pt").to(
+                self.model.device
+            )
+            attention_mask = torch.ones_like(input_tokens)
+
+            with torch.no_grad():
+                outputs = self.model(input_tokens, attention_mask=attention_mask)
+                logits = outputs.logits[0, -1] / self.temperature
+                probs = torch.nn.functional.softmax(logits, dim=0)
+
+            # Get the next token for each possible match
+            next_token_probs = {}
+            for value in possible_matches:
+                tokens = enum_tokens[value]
+                if len(generated_tokens) < len(tokens):
+                    next_token = tokens[len(generated_tokens)]
+                    next_token_probs[value] = probs[next_token].item()
+                else:
+                    # This value has been fully generated
+                    next_token_probs[value] = 1.0
+
+            selected_value = max(next_token_probs, key=next_token_probs.get)
+            selected_tokens = enum_tokens[selected_value]
+
+            # If we've generated all tokens for the selected value, we're done
+            if len(generated_tokens) >= len(selected_tokens):
+                break
+
+            # Add the next token to our generated sequence
+            next_token = selected_tokens[len(generated_tokens)]
+            generated_tokens.append(next_token)
+
+            self._debug(
+                caller="[generate_enum]",
+                value=f"Generated tokens: '{self.tokenizer.decode(generated_tokens)}', "
+                f"Possible matches: {possible_matches}",
+            )
+
+            # Update possible matches based on the generated token
+            possible_matches = [
+                value
+                for value in possible_matches
+                if len(enum_tokens[value]) > len(generated_tokens)
+                and enum_tokens[value][len(generated_tokens) - 1] == next_token
+            ]
+
+        self._debug(caller="[generate_enum]", value=f"Selected: {selected_value}")
+        return selected_value
 
     def _generate_array(
         self,
