@@ -16,6 +16,7 @@ def main():
             "date": {"type": "string", "description": "The date of the event"},
             "participants": {
                 "type": "array",
+                "minItems": 1,
                 "items": {
                     "type": "string",
                     "description": "The name of the participant",
