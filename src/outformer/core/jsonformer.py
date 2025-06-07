@@ -637,7 +637,6 @@ class Jsonformer:
                     # This value has been fully generated
                     next_token_probs[value] = 1.0
 
-            # Select the most probable next token
             selected_value = max(next_token_probs, key=next_token_probs.get)
             selected_tokens = enum_tokens[selected_value]
 
@@ -649,6 +648,12 @@ class Jsonformer:
             next_token = selected_tokens[len(generated_tokens)]
             generated_tokens.append(next_token)
 
+            self._debug(
+                caller="[generate_enum]",
+                value=f"Generated tokens: '{self.tokenizer.decode(generated_tokens)}', "
+                f"Possible matches: {possible_matches}",
+            )
+
             # Update possible matches based on the generated token
             possible_matches = [
                 value
@@ -656,12 +661,6 @@ class Jsonformer:
                 if len(enum_tokens[value]) > len(generated_tokens)
                 and enum_tokens[value][len(generated_tokens) - 1] == next_token
             ]
-
-            self._debug(
-                caller="[generate_enum]",
-                value=f"Generated token: {self.tokenizer.decode([next_token])}, "
-                f"Possible matches: {possible_matches}",
-            )
 
         self._debug(caller="[generate_enum]", value=f"Selected: {selected_value}")
         return selected_value
