@@ -33,7 +33,7 @@ def main():
 
     former = Jsonformer(model, tokenizer, max_tokens_string=100)
 
-    math_reasoning = former.generate(schema, prompt, debug=True)
+    math_reasoning = former.generate(schema, prompt)
 
     highlight_values(math_reasoning)
 

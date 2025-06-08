@@ -31,7 +31,7 @@ def main():
 
     former = Jsonformer(model, tokenizer)
 
-    event = former.generate(schema, prompt, debug=True)
+    event = former.generate(schema, prompt)
 
     highlight_values(event)
 
