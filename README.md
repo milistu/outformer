@@ -50,12 +50,12 @@ from outformer import Jsonformer, highlight_values
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 # Initialize model and tokenizer
-model_name = "Qwen/Qwen3-0.6B"
+model_name = "Qwen/Qwen3-1.7B"
 model = AutoModelForCausalLM.from_pretrained(model_name)
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 
 # Create Jsonformer instance
-jsonformer = Jsonformer(model, tokenizer, max_tokens_string=100)
+jsonformer = Jsonformer(model, tokenizer, max_tokens_string=30)
 
 # Define your JSON schema
 json_schema = {
@@ -79,14 +79,18 @@ json_schema = {
         },
         "color": {
             "type": "string",
-            "description": "Color of the product",
+            "description": "Color of the product if specified, otherwise return 'Unknown'",
+        },
+        "material": {
+            "type": "string",
+            "description": "Material of the product if specified, otherwise return 'Unknown'",
         },
         "features": {
             "type": "array",
             "minItems": 3,
             "items": {
                 "type": "string",
-                "description": "Features of the product that may be relevant for the customer",
+                "description": "Features of the product that may be relevant for the customer. Extract as much as possible.",
             },
         },
     },
@@ -116,16 +120,16 @@ The code above will generate a structured JSON output and display it with highli
 ```json
 {
     "brand": "Adidas",
-    "model": "Powerlift.3",
-    "product_type": "Lifting/Weight Training Shoes",
+    "model": "Powerlift.3 Cross-Trainer Shoes",
+    "product_type": "Cross-Trainer Shoes",
     "gender": "Male",
-    "color": "Black",
+    "color": "Unknown",
+    "material": "Synthetic leather",
     "features": [
-        "Extra wide design for optimal foot support",
+        "Lockdown fit",
+        "Extra-wide design",
         "High-density die-cut wedge midsole",
-        "Rubber sole with removable insole",
-        "100% synthetic leather"
-    ]
+    ],
 }
 ```
 
