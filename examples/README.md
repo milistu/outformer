@@ -61,7 +61,7 @@ To run any example:
 
 1. Make sure you have the required dependencies installed:
 ```bash
-pip install transformers outformer
+pip install outformer
 ```
 
 2. Run the desired example:
