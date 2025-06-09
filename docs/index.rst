@@ -27,6 +27,8 @@ Features
 
    installation
    quickstart
+   examples
+   json_schema
    api_reference
 
 Indices and tables
