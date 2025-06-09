@@ -5,9 +5,8 @@ from outformer import Jsonformer, highlight_values
 
 def main():
     model_name = "Qwen/Qwen3-1.7B"
-    cache_dir = ".cache"
 
-    model = AutoModelForCausalLM.from_pretrained(model_name, cache_dir=cache_dir)
+    model = AutoModelForCausalLM.from_pretrained(model_name)
     tokenizer = AutoTokenizer.from_pretrained(model_name)
 
     schema = {
@@ -17,6 +16,7 @@ def main():
             "date": {"type": "string", "description": "The date of the event"},
             "participants": {
                 "type": "array",
+                "minItems": 1,
                 "items": {
                     "type": "string",
                     "description": "The name of the participant",
@@ -31,7 +31,7 @@ def main():
 
     former = Jsonformer(model, tokenizer)
 
-    event = former.generate(schema, prompt, debug=True)
+    event = former.generate(schema, prompt)
 
     highlight_values(event)
 
