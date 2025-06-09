@@ -2,7 +2,7 @@
 
 ## Requirements
 
-We recommend **Python 3.10+, [PyTorch 2.7.0+](https://pytorch.org/get-started/locally/), [transformers](https://github.com/huggingface/transformers) v4.51.3+**.
+We recommend **Python 3.10+, [PyTorch](https://pytorch.org/get-started/locally/) 2.7.0+, [transformers](https://github.com/huggingface/transformers) v4.51.3+**.
 
 ## Install via pip
 
