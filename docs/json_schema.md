@@ -164,8 +164,9 @@ Outformer currently supports a subset of JSON Schema parameters to define the st
 
 ## Best Practices
 
-1. Always provide clear `description` fields to guide the model's generation, but take into account that longer descriptions leads to longer generation time
-2. Use `minItems` and/or `maxItems` for arrays when you know exaclty or approaximetly how much elements you want
-3. Use `enum` when you want to restrict values to specific options
-4. Try to create clean and organized schemas that you can easily navigate - this will be the same for LLM
-5. Use nested objects and arrays to represent complex data structures 
+1. Always provide clear `description` fields to guide the model's generation, but note that longer descriptions may increase generation time
+2. Use `minItems` and/or `maxItems` for arrays when you know exactly or approximately how many elements you need
+3. Use `enum` to restrict values to specific predefined options
+4. Maintain clean and well-organized schemas - this helps both human readability and LLM performance
+5. Represent complex data structures using nested objects and arrays
+6. If results are unsatisfactory, experiment with your prompt or consider using a larger model
