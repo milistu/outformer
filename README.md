@@ -39,6 +39,7 @@ pip install -e .
 
 Here's a simple example to get you started:
 
+<!-- ![Quick Start Example](https://raw.githubusercontent.com/milistu/outformer/main/docs/img/quick_start_light.png) -->
 ![Quick Start Example](./docs/img/quick_start_dark.png#gh-dark-mode-only)
 ![Quick Start Example](./docs/img/quick_start_light.png#gh-light-mode-only)
 
