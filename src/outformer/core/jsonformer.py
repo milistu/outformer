@@ -1,9 +1,9 @@
 import json
-from typing import Any, Dict, List, Optional, Union, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
 import torch
 from termcolor import cprint
-from transformers import PreTrainedModel, PreTrainedTokenizer
+from transformers import PreTrainedModel, PreTrainedTokenizer, ProcessorMixin
 
 from outformer.core.token_processors import (
     NumberStoppingCriteria,
@@ -11,6 +11,9 @@ from outformer.core.token_processors import (
     OutputNumbersTokens,
     StringStoppingCriteria,
 )
+
+if TYPE_CHECKING:
+    from PIL.Image import Image as PILImage
 
 
 class Jsonformer:
@@ -28,7 +31,7 @@ class Jsonformer:
     def __init__(
         self,
         model: PreTrainedModel,
-        tokenizer: PreTrainedTokenizer,
+        tokenizer: Union[PreTrainedTokenizer, ProcessorMixin],
         *,
         debug: bool = False,
         max_array_length: int = 10,
@@ -43,7 +46,9 @@ class Jsonformer:
 
         Args:
             model (PreTrainedModel): The model to use for generation
-            tokenizer (PreTrainedTokenizer): The tokenizer to use for generation
+            tokenizer (Union[PreTrainedTokenizer, ProcessorMixin]): The tokenizer or processor to use for generation.
+                For Vision-Language Models, pass the processor directly (e.g., AutoProcessor).
+                For Language Models, pass the tokenizer (e.g., AutoTokenizer).
             debug (bool): Whether to print debug information
             max_array_length (int): The maximum number of elements in an array
             max_tokens_number (int): The maximum number of tokens in a number
@@ -53,12 +58,19 @@ class Jsonformer:
             max_attempts (int): The maximum number of attempts for value generation (currently used in number generation)
         """
         self.model = model
-        self.tokenizer = tokenizer
+        if isinstance(tokenizer, ProcessorMixin):
+            self.processor = tokenizer
+            self.tokenizer = tokenizer.tokenizer
+        else:
+            self.processor = None
+            self.tokenizer = tokenizer
+
         self.value = {}  # The JSON object being built
         self.current_schema = None
 
         self.prompt = None
         self.schema = None
+        self.current_images = None
 
         # Configure generation parameters
         self.debug_on = debug
@@ -89,6 +101,104 @@ class Jsonformer:
         # Print value in yellow for prompts, blue otherwise
         color = "yellow" if is_prompt else "blue"
         cprint(text=value, color=color)
+    
+    def _prepare_messages(
+        self,
+        prompt: Union[str, List[Dict[str, Any]]],
+        images: Optional[Union[str, List[str]]] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Convert prompt and images into messages format for processor.apply_chat_template().
+        
+        Based on transformers documentation:
+        https://huggingface.co/docs/transformers/en/main_classes/processors
+        """
+
+        if isinstance(prompt, list):
+            return prompt
+        
+        content = []
+
+        if images is not None:
+            if not isinstance(images, list):
+                images = [images]
+            
+            for img in images:
+                content.append({"type": "image", "url": img})
+        
+        content.append({"type": "text", "text": prompt})
+
+        return [{"role": "user", "content": content}]
+    
+    def _encode_prompt(
+        self,
+        prompt: Union[str, List[Dict[str, Any]]],
+        images: Optional[Union[str, List[str]]] = None,
+    ) -> Union[torch.Tensor, Dict[str, torch.Tensor]]:
+        """
+        Encode prompt (with optional images) based on model type.
+
+        Args:
+            prompt: Text prompt or messages list
+            images: Optional image(s) for VLM models
+
+        Returns:
+            For LLM: tensor of input_ids
+            For VLM: dict with input_ids, pixel_values, attention_mask
+
+        Raises:
+            ValueError: If images provided for non-VLM or messages for non-chat model
+        """
+        # Case 1: VLM with processor
+        if self.processor is not None:
+            messages = self._prepare_messages(prompt, images)
+            inputs = self.processor.apply_chat_template(
+                conversation=messages,
+                add_generation_prompt=True,
+                tokenize=True,
+                return_dict=True,
+                return_tensors="pt",
+            ).to(self.model.device, dtype=self.model.dtype)
+            return {k: v for k, v in inputs.items()}
+        
+        # Case 2: Chat-finetuned LLM (has chat template)
+        elif hasattr(self.tokenizer, "apply_chat_template"):
+            if images is not None:
+                raise ValueError(
+                    "Images provided but model doesn't support vision. "
+                    "Use a Vision-Language Model with AutoProcessor."
+                )
+            
+            if isinstance(prompt, list):
+                messages = prompt
+            else:
+                messages = [{"role": "user", "content": prompt}]
+            
+            return self.tokenizer.apply_chat_template(
+                messages=messages,
+                add_generation_prompt=True,
+                tokenize=True,
+                return_tensors="pt",
+            ).to(self.model.device, dtype=self.model.dtype)
+        
+        # Case 3: Base LLM (no chat template)
+        else:
+            if images is not None:
+                raise ValueError(
+                    "Images provided but model doesn't support vision. "
+                    "Use a Vision-Language Model with AutoProcessor."
+                )
+            
+            if isinstance(prompt, list):
+                raise ValueError(
+                    "Messages format provided but tokenizer doesn't have a chat template. "
+                    "Use a string prompt or a chat-finetuned model."
+                )
+            
+            return self.tokenizer.encode(
+                text=prompt,
+                return_tensors="pt",
+            ).to(self.model.device, dtype=self.model.dtype)
 
     def _build_field_guidance(self, schema: Dict[str, Any]) -> str:
         """
@@ -248,9 +358,27 @@ class Jsonformer:
         # Truncate progress at marker
         truncated_progress = json_progress[:marker_index]
 
+        # Extract text from prompt (handles both string and messages)
+        if isinstance(self.prompt, list):
+            text_parts = []
+            for msg in self.prompt:
+                content = msg.get("content", "")
+                if isinstance(content, list):
+                    for item in content:
+                        if item.get("type") == "text":
+                            text = item.get("text", "")
+                            if text.strip():
+                                text_parts.append(text)
+                elif isinstance(content, str) and content.strip():
+                    text_parts.append(content)
+
+            prompt_text = " ".join(text_parts) if text_parts else "Generate structured output"
+        else:
+            prompt_text = self.prompt
+
         # Construct final prompt
         return prompt_template.format(
-            prompt=self.prompt, schema=json_schema, progress=truncated_progress
+            prompt=prompt_text, schema=json_schema, progress=truncated_progress
         )
 
     def _is_valid_number(
@@ -334,7 +462,7 @@ class Jsonformer:
 
     def _process_tokens(
         self,
-        prompt: str,
+        prompt: Union[str, List[Dict[str, Any]]],
         max_new_tokens: int,
         logits_processor: Optional[List] = None,
         stopping_criteria: Optional[List] = None,
@@ -344,7 +472,7 @@ class Jsonformer:
         Process tokens for generation, including encoding and generation.
 
         Args:
-            prompt (str): The input prompt
+            prompt (Union[str, List[Dict[str, Any]]]): The input prompt or messages list
             max_new_tokens (int): Maximum number of new tokens to generate
             logits_processor (Optional[List]): Optional list of logits processors
             stopping_criteria (Optional[List]): Optional list of stopping criteria
@@ -353,26 +481,47 @@ class Jsonformer:
         Returns:
             Tuple[torch.Tensor, str]: Generated tokens and decoded text
         """
-        input_tokens = self.tokenizer.encode(text=prompt, return_tensors="pt").to(
-            self.model.device
-        )
+        encoded_inputs = self._encode_prompt(prompt=prompt, images=self.current_images)
 
-        generation_kwargs = self._get_generation_kwargs(
-            input_tokens=input_tokens,
-            max_new_tokens=max_new_tokens,
-            logits_processor=logits_processor,
-            stopping_criteria=stopping_criteria,
-            temperature=temperature,
-        )
+        if isinstance(encoded_inputs, dict):
+            generation_kwargs = {
+                **encoded_inputs,
+                "max_new_tokens": max_new_tokens,
+                "do_sample": temperature is not None and temperature > 0,
+            }
+
+            if temperature and temperature > 0:
+                generation_kwargs["temperature"] = temperature
+            
+            if logits_processor:
+                generation_kwargs["logits_processor"] = logits_processor
+            
+            if stopping_criteria:
+                generation_kwargs["stopping_criteria"] = stopping_criteria
+            
+            input_length = encoded_inputs["input_ids"].shape[1]
+            input_ids_for_comparison = encoded_inputs["input_ids"][0]
+
+        else:
+
+            generation_kwargs = self._get_generation_kwargs(
+                input_tokens=encoded_inputs,
+                max_new_tokens=max_new_tokens,
+                logits_processor=logits_processor,
+                stopping_criteria=stopping_criteria,
+                temperature=temperature,
+            )
+            input_length = encoded_inputs.shape[1]
+            input_ids_for_comparison = encoded_inputs[0]
 
         response = self.model.generate(**generation_kwargs)
 
         # Extract generated tokens (excluding prompt if present)
         generated_tokens = response[0]
-        if len(generated_tokens) > len(input_tokens[0]) and torch.equal(
-            generated_tokens[: len(input_tokens[0])], input_tokens[0]
+        if len(generated_tokens) > input_length and torch.equal(
+            generated_tokens[: input_length], input_ids_for_comparison
         ):
-            generated_tokens = generated_tokens[len(input_tokens[0]) :]
+            generated_tokens = generated_tokens[input_length :]
 
         response_text = self.tokenizer.decode(
             generated_tokens,
@@ -497,17 +646,20 @@ class Jsonformer:
         prompt = self._get_prompt()
         self._debug(caller="[generate_boolean]", value=prompt, is_prompt=True)
 
-        # Prepare input
-        input_tensor = self.tokenizer.encode(text=prompt, return_tensors="pt").to(
-            self.model.device
-        )
-        attention_mask = torch.ones_like(input_tensor)
+        # Encode based on model type
+        encoded_inputs = self._encode_prompt(prompt=prompt)
 
         # Get model output with temperature for controlled randomness
         with torch.no_grad():
-            outputs = self.model(input_tensor, attention_mask=attention_mask)
-            logits = outputs.logits[0, -1] / self.temperature
-            probs = torch.nn.functional.softmax(logits, dim=0)
+            if isinstance(encoded_inputs, dict):
+                # VLM path
+                outputs = self.model(**encoded_inputs)
+            else:
+                # LLM path
+                outputs = self.model(encoded_inputs, attention_mask=torch.ones_like(encoded_inputs))
+        
+        logits = outputs.logits[0, -1] / self.temperature
+        probs = torch.nn.functional.softmax(logits, dim=0)
 
         # Get token IDs for true/false variations, taking first token if multi-token
         true_tokens = ["true", "True"]
@@ -931,8 +1083,9 @@ class Jsonformer:
     def generate(
         self,
         schema: Dict[str, Any],
-        prompt: str,
+        prompt: Union[str, List[Dict[str, Any]]],
         *,
+        images: Optional[Union[str, List[str], "PILImage", List["PILImage"]]] = None,
         debug: Optional[bool] = None,
         max_array_length: Optional[int] = None,
         max_tokens_number: Optional[int] = None,
@@ -945,7 +1098,14 @@ class Jsonformer:
 
         Args:
             schema (Dict[str, Any]): The schema defining the JSON structure
-            prompt (str): The prompt guiding the generation
+            prompt (Union[str, List[Dict[str, Any]]]): The prompt guiding the generation.
+                Can be a string for simple prompts, or a list of messages for chat format.
+                For VLMs, messages can include images in the content.
+            images (Optional[...]): Optional image(s) for Vision-Language Models.
+                Can be a single image or list of images. Each image can be:
+                - String file path: "path/to/image.jpg"
+                - URL: "https://example.com/image.jpg"
+                - PIL Image object: PIL.Image.open("image.jpg")
             debug (Optional[bool]): Whether to enable debug mode
             max_array_length (Optional[int]): The maximum length of arrays to generate
             max_tokens_number (Optional[int]): The maximum number of tokens to generate for numbers
@@ -960,8 +1120,21 @@ class Jsonformer:
             ValueError: If schema is invalid or prompt is empty
         """
         self._validate_schema(schema, required_fields=["properties"])
-        if not prompt.strip():
-            raise ValueError("Prompt cannot be empty")
+
+        # Validate prompt
+        if isinstance(prompt, str):
+            if not prompt.strip():
+                raise ValueError("Prompt cannot be empty")
+        elif isinstance(prompt, list):
+            if not prompt:
+                raise ValueError("Messages list cannot be empty")
+        else:
+            raise ValueError("Prompt must be a string or list of messages")
+
+        if images is not None and not isinstance(prompt, list):
+            self.prompt = self._prepare_messages(prompt, images)
+        else:
+            self.prompt = prompt
 
         # Reset internal state
         self.value = {}
@@ -969,6 +1142,7 @@ class Jsonformer:
         # Update instance variables
         self.schema = schema
         self.prompt = prompt
+        self.current_images = None
         self.debug_on = debug if debug is not None else self.debug_on
         self.max_array_length = (
             max_array_length if max_array_length is not None else self.max_array_length
