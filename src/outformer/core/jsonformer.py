@@ -1,4 +1,5 @@
 import json
+import warnings
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
@@ -37,15 +38,16 @@ class Jsonformer:
         temperature: float = 0.7,
         generation_marker: str = "|GENERATION|",
         max_attempts: int = 3,
+        use_field_guidance: bool = True,
     ) -> None:
         """
         Initialize a Jsonformer instance.
 
         Args:
             model (PreTrainedModel): The model to use for generation
-            tokenizer (Union[PreTrainedTokenizer, ProcessorMixin]): The tokenizer or processor to use for generation.
-                For Vision-Language Models, pass the processor directly (e.g., AutoProcessor).
-                For Language Models, pass the tokenizer (e.g., AutoTokenizer).
+            tokenizer (Union[PreTrainedTokenizer, ProcessorMixin]): The tokenizer or processor
+                to use for generation. For Vision-Language Models, pass the processor directly
+                (e.g., AutoProcessor). For Language Models, pass the tokenizer (e.g., AutoTokenizer).
             debug (bool): Whether to print debug information
             max_array_length (int): The maximum number of elements in an array
             max_tokens_number (int): The maximum number of tokens in a number
@@ -53,6 +55,9 @@ class Jsonformer:
             temperature (float): The temperature to use for generation
             generation_marker (str): The marker used to track the current generation position in the JSON
             max_attempts (int): The maximum number of attempts for value generation (currently used in number generation)
+            use_field_guidance (bool): Whether to inject field-level guidance comments into the
+                JSON progress during generation. Default True. Set to False if your model
+                reproduces comments literally instead of using them as guidance.
         """
         self.model = model
         if isinstance(tokenizer, ProcessorMixin):
@@ -65,7 +70,7 @@ class Jsonformer:
         self.value = {}  # The JSON object being built
         self.current_schema = None
 
-        self.base_prompt_text = None
+        self.prompt = None
         self.current_images = None
         self.schema = None
 
@@ -76,6 +81,7 @@ class Jsonformer:
         self.max_tokens_string = max_tokens_string
         self.temperature = temperature
         self.max_attempts = max_attempts
+        self.use_field_guidance = use_field_guidance
 
         # Marker used to track where generation should happen
         self.generation_marker = generation_marker
@@ -107,29 +113,36 @@ class Jsonformer:
         """
         Encode prompt (with optional images) based on model type.
 
+        For VLM models, the full processor tokenization is always used to ensure
+        correct alignment between image tokens and pixel values. Images should be
+        pre-loaded as PIL objects (done in generate()) to avoid re-downloading
+        from URLs on each field generation.
+
         Args:
             prompt: Text prompt
-            images: Optional image(s) for VLM models
+            images: Optional image(s) for VLM models (URLs, file paths, or PIL Images)
 
         Returns:
             For LLM: tensor of input_ids
-            For VLM: dict with input_ids, pixel_values, attention_mask
+            For VLM: dict with input_ids, pixel_values, attention_mask, etc.
 
         Raises:
-            ValueError: If images provided for non-VLM or messages for non-chat model
+            ValueError: If images provided for non-VLM model
         """
-        # Case 1: VLM with processor
+        # VLM path: processor handles both text and images
         if self.processor is not None:
-            image_list = []
+            # Build messages for processor chat template
+            content = []
             if images is not None:
                 image_list = images if isinstance(images, list) else [images]
-            
-            content = []
-            for img in image_list:
-                content.append({"type": "image", "url": img})
+                for img in image_list:
+                    content.append({"type": "image", "url": img})
             content.append({"type": "text", "text": prompt})
-
             messages = [{"role": "user", "content": content}]
+
+            # Always use full processor tokenization for correct image token alignment.
+            # The processor expands <image> placeholders to match pixel_values dimensions,
+            # which cannot be replicated by tokenizing text separately.
             inputs = self.processor.apply_chat_template(
                 conversation=messages,
                 add_generation_prompt=True,
@@ -137,37 +150,26 @@ class Jsonformer:
                 return_dict=True,
                 return_tensors="pt",
             )
-            return {k: v.to(self.model.device, dtype=self.model.dtype if "pixel" in k else v.dtype) for k, v in inputs.items()}
-        
-        # Case 2: Chat-finetuned LLM (has chat template)
-        elif hasattr(self.tokenizer, "apply_chat_template"):
-            if images is not None:
-                raise ValueError(
-                    "Images provided but model doesn't support vision. "
-                    "Use a Vision-Language Model with AutoProcessor."
-                )
-            
-            messages = [{"role": "user", "content": prompt}]
-            
-            return self.tokenizer.apply_chat_template(
-                messages=messages,
-                add_generation_prompt=True,
-                tokenize=True,
-                return_tensors="pt",
-            ).to(self.model.device, dtype=self.model.dtype)
-        
-        # Case 3: Base LLM (no chat template)
+            # Move to device with proper dtype handling
+            result = {}
+            for k, v in inputs.items():
+                if v.is_floating_point():
+                    result[k] = v.to(self.model.device, dtype=self.model.dtype)
+                else:
+                    result[k] = v.to(self.model.device)
+            return result
+
+        # LLM path: original tokenizer.encode() behavior
         else:
             if images is not None:
                 raise ValueError(
                     "Images provided but model doesn't support vision. "
                     "Use a Vision-Language Model with AutoProcessor."
                 )
-            
             return self.tokenizer.encode(
                 text=prompt,
                 return_tensors="pt",
-            ).to(self.model.device, dtype=self.model.dtype)
+            ).to(self.model.device)
 
     def _build_field_guidance(self, schema: Dict[str, Any]) -> str:
         """
@@ -294,8 +296,17 @@ class Jsonformer:
         Raises:
             ValueError: If the generation marker is not found in the current progress
         """
+        # Define template parts separately for clarity
+        prompt_template = (
+            "{prompt}\n"
+            "Output result in the following JSON schema format:\n"
+            "{schema}\n"
+            "Result: {progress}"
+        )
+
         # Build JSON progress
         json_progress = json.dumps(self.value)
+        json_schema = json.dumps(self.schema)
 
         # Find marker position
         marker_index = json_progress.find(f'"{self.generation_marker}"')
@@ -304,8 +315,8 @@ class Jsonformer:
                 f"Generation marker '{self.generation_marker}' not found in current progress"
             )
 
-        # Inject comment if we have current field context
-        if self.current_schema and self.processor is None:
+        # Inject comment if we have current field context and field guidance is enabled
+        if self.current_schema and self.use_field_guidance:
             guidance = self._build_field_guidance(schema=self.current_schema)
             if guidance:
                 json_progress = self._inject_comment_at_generation_point(
@@ -318,27 +329,10 @@ class Jsonformer:
         # Truncate progress at marker
         truncated_progress = json_progress[:marker_index]
 
-        # For VLMs: simpler format without schema (prevents confusion)
-        if self.processor is not None:
-            prompt_template = (
-                "{prompt}\n"
-                "Result: {progress}"
-            )
-            return prompt_template.format(
-                prompt=self.base_prompt_text, progress=truncated_progress
-            )
-
-        else:
-            prompt_template = (
-                "{prompt}\n"
-                "Output result in the following JSON schema format:\n"
-                "{schema}\n"
-                "Result: {progress}"
-            )
-            json_schema = json.dumps(self.schema)
-            return prompt_template.format(
-                prompt=self.base_prompt_text, schema=json_schema, progress=truncated_progress
-            )
+        # Construct final prompt (same template for all model types)
+        return prompt_template.format(
+            prompt=self.prompt, schema=json_schema, progress=truncated_progress
+        )
 
     def _is_valid_number(
         self,
@@ -365,7 +359,7 @@ class Jsonformer:
 
     def _get_generation_kwargs(
         self,
-        input_tokens: torch.Tensor,
+        encoded_inputs: Union[torch.Tensor, Dict[str, torch.Tensor]],
         max_new_tokens: int,
         logits_processor: Optional[List] = None,
         stopping_criteria: Optional[List] = None,
@@ -375,7 +369,8 @@ class Jsonformer:
         Get common generation parameters for model.generate() calls.
 
         Args:
-            input_tokens (torch.Tensor): Input token tensor
+            encoded_inputs: Either a tensor of input_ids (LLM) or a dict with
+                input_ids, pixel_values, attention_mask, etc. (VLM)
             max_new_tokens (int): Maximum number of new tokens to generate
             logits_processor (Optional[List]): Optional list of logits processors
             stopping_criteria (Optional[List]): Optional list of stopping criteria
@@ -386,13 +381,23 @@ class Jsonformer:
         """
         temperature = temperature or self.temperature
 
-        generation_kwargs = {
-            "inputs": input_tokens,
-            "attention_mask": torch.ones_like(input_tokens),
-            "max_new_tokens": max_new_tokens,
-            "num_return_sequences": 1,
-            "pad_token_id": self.tokenizer.eos_token_id,
-        }
+        if isinstance(encoded_inputs, dict):
+            # VLM path: spread dict (input_ids, pixel_values, attention_mask, etc.)
+            generation_kwargs = {
+                **encoded_inputs,
+                "max_new_tokens": max_new_tokens,
+                "num_return_sequences": 1,
+                "pad_token_id": self.tokenizer.eos_token_id,
+            }
+        else:
+            # LLM path: tensor of input_ids
+            generation_kwargs = {
+                "inputs": encoded_inputs,
+                "attention_mask": torch.ones_like(encoded_inputs),
+                "max_new_tokens": max_new_tokens,
+                "num_return_sequences": 1,
+                "pad_token_id": self.tokenizer.eos_token_id,
+            }
 
         if logits_processor:
             generation_kwargs["logits_processor"] = logits_processor
@@ -442,34 +447,19 @@ class Jsonformer:
         """
         encoded_inputs = self._encode_prompt(prompt=prompt, images=self.current_images)
 
-        if isinstance(encoded_inputs, dict):
-            generation_kwargs = {
-                **encoded_inputs,
-                "max_new_tokens": max_new_tokens,
-                "do_sample": temperature is not None and temperature > 0,
-            }
+        generation_kwargs = self._get_generation_kwargs(
+            encoded_inputs=encoded_inputs,
+            max_new_tokens=max_new_tokens,
+            logits_processor=logits_processor,
+            stopping_criteria=stopping_criteria,
+            temperature=temperature,
+        )
 
-            if temperature and temperature > 0:
-                generation_kwargs["temperature"] = temperature
-            
-            if logits_processor:
-                generation_kwargs["logits_processor"] = logits_processor
-            
-            if stopping_criteria:
-                generation_kwargs["stopping_criteria"] = stopping_criteria
-            
+        # Track input length for extracting generated tokens
+        if isinstance(encoded_inputs, dict):
             input_length = encoded_inputs["input_ids"].shape[1]
             input_ids_for_comparison = encoded_inputs["input_ids"][0]
-
         else:
-
-            generation_kwargs = self._get_generation_kwargs(
-                input_tokens=encoded_inputs,
-                max_new_tokens=max_new_tokens,
-                logits_processor=logits_processor,
-                stopping_criteria=stopping_criteria,
-                temperature=temperature,
-            )
             input_length = encoded_inputs.shape[1]
             input_ids_for_comparison = encoded_inputs[0]
 
@@ -478,9 +468,9 @@ class Jsonformer:
         # Extract generated tokens (excluding prompt if present)
         generated_tokens = response[0]
         if len(generated_tokens) > input_length and torch.equal(
-            generated_tokens[: input_length], input_ids_for_comparison
+            generated_tokens[:input_length], input_ids_for_comparison
         ):
-            generated_tokens = generated_tokens[input_length :]
+            generated_tokens = generated_tokens[input_length:]
 
         response_text = self.tokenizer.decode(
             generated_tokens,
@@ -1061,11 +1051,11 @@ class Jsonformer:
             prompt (Union[str, List[Dict[str, Any]]]): The prompt guiding the generation.
                 Can be a string for simple prompts, or a list of messages for chat format.
                 For VLMs, messages can include images in the content.
-            images (Optional[...]): Optional image(s) for Vision-Language Models.
-                Can be a single image or list of images. Each image can be:
-                - String file path: "path/to/image.jpg"
+            images (Optional[Union[str, List[str]]]): Optional image(s) for Vision-Language
+                Models. Can be a single image or list of images. Each image can be:
                 - URL: "https://example.com/image.jpg"
-                - PIL Image object: PIL.Image.open("image.jpg")
+                - String file path: "path/to/image.jpg"
+                - PIL Image object
             debug (Optional[bool]): Whether to enable debug mode
             max_array_length (Optional[int]): The maximum length of arrays to generate
             max_tokens_number (Optional[int]): The maximum number of tokens to generate for numbers
@@ -1081,6 +1071,7 @@ class Jsonformer:
         """
         self._validate_schema(schema, required_fields=["properties"])
 
+        # Parse prompt: extract text and images from messages format
         if isinstance(prompt, list):
             text_parts = []
             extracted_images = []
@@ -1099,29 +1090,57 @@ class Jsonformer:
                                 extracted_images.append(img_url)
                 elif isinstance(content, str) and content.strip():
                     text_parts.append(content)
-            
-            extracted_text = " ".join(text_parts) if text_parts else ""
 
-            base_prompt_text = extracted_text
+            prompt_text = " ".join(text_parts) if text_parts else ""
             images_to_use = extracted_images if images is None else images
 
         elif isinstance(prompt, str):
             if not prompt.strip():
                 raise ValueError("Prompt cannot be empty")
-            base_prompt_text = prompt
+            prompt_text = prompt
             images_to_use = images
         else:
             raise ValueError("Prompt must be string or messages list")
-        
-        if not base_prompt_text.strip():
+
+        if not prompt_text.strip():
             raise ValueError("Prompt cannot be empty")
-        
-        self.base_prompt_text = base_prompt_text
+
+        # For VLMs: pre-load images as PIL objects to avoid re-downloading
+        # from URLs on each field generation call
+        if self.processor is not None and images_to_use is not None:
+            try:
+                from transformers.image_utils import load_image
+
+                img_list = (
+                    images_to_use
+                    if isinstance(images_to_use, list)
+                    else [images_to_use]
+                )
+                images_to_use = [
+                    load_image(img) if isinstance(img, str) else img
+                    for img in img_list
+                ]
+            except ImportError:
+                pass  # Fall back to raw URLs if load_image unavailable
+
+        # Store generation state
+        self.prompt = prompt_text
         self.current_images = images_to_use
         self.schema = schema
-        
+
         # Reset internal state
         self.value = {}
+
+        # Emit warning for VLM usage
+        if self.processor is not None:
+            warnings.warn(
+                "VLM detected. Vision-Language Models may produce lower-quality "
+                "structured output compared to text-only LLMs. Results depend "
+                "heavily on the specific model and its instruction-following "
+                "capability.",
+                UserWarning,
+                stacklevel=2,
+            )
 
         # Update instance variables
         self.debug_on = debug if debug is not None else self.debug_on
